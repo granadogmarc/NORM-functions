@@ -1,19 +1,18 @@
-# Build artifacts
+# Build directories
 build/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
-*.o
-*.o.d
-*.so
-*.a
-*.out
 
-# Executables
+# Binaries
 own-normFactors
-createLUT
-first_test
 
-# Editor / OS
+# ROOT
+*.root
+
+# OS junk
 .DS_Store
+
+# Editor
+*~
