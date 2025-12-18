@@ -1,26 +1,44 @@
-cmake_minimum_required(VERSION 3.0)
-project(own-normFactors)
+cmake_minimum_required(VERSION 3.15)
 
+project(norm-functions LANGUAGES CXX)
 
-set(ROOT_DIR /home/granado/Applications/root/root-6.32.02/install)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# --------------------------------------------------
+# ROOT
+# --------------------------------------------------
+find_package(ROOT REQUIRED COMPONENTS
+  Core
+  RIO
+  Tree
+  Hist
+  Graf
+  Gpad
+  Physics
+)
 
-# Locate ROOT and define a variable for the include directory
-find_package(ROOT REQUIRED COMPONENTS MathCore Hist Tree)
-message(STATUS "ROOT libraries: ${ROOT_LIBRARIES}")
-include_directories(${ROOT_INCLUDE_DIRS})
+# --------------------------------------------------
+# Executable
+# --------------------------------------------------
+add_executable(own-normFactors
+  src/own-normFactors.cxx
+  src/normFunctions.cxx
+)
 
+target_include_directories(own-normFactors
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${ROOT_INCLUDE_DIRS}
+)
 
-link_directories(/home/granado/Applications/root/root-6.32.02/install/lib)
-#add_executable(first_test first_test.cxx normFunctions.cxx ${CASToR_DATAFILES_SRC} ${CASToR_SRC})
-add_executable( own-normFactors own-normFactors.cxx normFunctions.cxx ${CASToR_DATAFILES_SRC} ${CASToR_SRC})
-
-#target_link_libraries(first_test ${ROOT_LIBRARIES})
-target_link_libraries(own-normFactors ${ROOT_LIBRARIES})
-#add_executable(createLUT createLUT.cxx ${CASToR_DATAFILES_SRC} ${CASToR_SRC})
-# Link against ROOT libraries
-#target_link_libraries(createLUT ${ROOT_LIBRARIES})
-list(APPEND CMAKE_PREFIX_PATH $ENV{ROOTSYS})
-
-
-
+target_link_libraries(own-normFactors
+  PRIVATE
+    ROOT::Core
+    ROOT::RIO
+    ROOT::Tree
+    ROOT::Hist
+    ROOT::Graf
+    ROOT::Gpad
+    ROOT::Physics
+)
