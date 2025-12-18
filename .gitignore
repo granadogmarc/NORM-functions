@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.o.d
+*.so
+*.a
+*.out
+
+# Executables
+own-normFactors
+createLUT
+first_test
+
+# Editor / OS
+.DS_Store
