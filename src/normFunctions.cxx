@@ -6,39 +6,59 @@
 #include <glob.h>
 
 
+// Helper: compute transaxial strides (keeps consistent packing between loops)
+struct TransaxialStrides {
+  int strideLayer;
+  int strideCrystal;
+  int strideSubmodule;
+  int strideModule;
+  int strideRsector;
+};
+
+static inline TransaxialStrides makeTransaxialStrides(uint32_t nModulesTransaxial,
+                           uint32_t nSubmodulesTransaxial,
+                           uint32_t nCrystalsTransaxial,
+                           uint8_t  /*nLayers*/) {
+  TransaxialStrides s;
+  s.strideLayer = 1;
+  // remove layers from transaxial strides (18D packing)
+  s.strideCrystal = 1;
+  s.strideSubmodule = int(nCrystalsTransaxial);
+  s.strideModule = int(nCrystalsTransaxial) * int(nSubmodulesTransaxial);
+  s.strideRsector = int(nModulesTransaxial) * int(nSubmodulesTransaxial) * int(nCrystalsTransaxial);
+  return s;
+}
+
+
 std::pair<size_t, size_t>
 processFile(const std::string &filename,
 			matrixRingsComponent		&ringsComponentMatrix,
 			double						meanRingsComponentMatrix,
 			matrixRingsComponent		&blockTrAComponentMatrix,
-			matrixRingsComponent		&oldBlockTrAComponentMatrix,
 			double						meanBlockTrAComponentMatrix,
-			double						oldMeanBlockTrAComponentMatrix,
 			vectorRadialComponent		&radialComponentVector,
-			vectorRadialComponent		&oldRadialComponentVector,
 			double						meanRingComponentVector,
-			double						oldMeanRingComponentVector,
-			vectorRingComponent		&ringComponentVector,
+      vectorRingComponent		&ringComponentVector,
 			DetectorCounters &detectorEfficyCounts,
-			Long64_t &usedLOR,
-			Long64_t &totalEvents,
+      Long64_t &usedLOR,
+      Long64_t &totalEvents,
             uint32_t nRsectorsAngPos,
-			uint32_t nRsectorsAxial,
+      uint32_t nRsectorsAxial,
             bool invertDetOrder,
-			int rsectorIdOrder,
+      int rsectorIdOrder,
             uint32_t nModulesTransaxial,
-			uint32_t nModulesAxial,
+      uint32_t nModulesAxial,
             uint32_t nSubmodulesTransaxial,
-			uint32_t nSubmodulesAxial,
+      uint32_t nSubmodulesAxial,
             uint32_t nCrystalsTransaxial,
-			uint32_t nCrystalsAxial,
+      uint32_t nCrystalsAxial,
             uint8_t nLayers,
-			uint32_t *nCrystalPerLayer,
+      uint32_t *nCrystalPerLayer,
             uint32_t nLayersRptTransaxial,
-			uint32_t nLayersRptAxial,
+      uint32_t nLayersRptAxial,
             const Phantom &myPhantom,
-			const Phantom &emptyPhantom,
-			float crystalDepth,
+      const Phantom &emptyPhantom,
+      float crystalDepth,
             float detectorRadius)
 {
     size_t newKeys = 0;
@@ -99,7 +119,7 @@ processFile(const std::string &filename,
 
 
 
-        //if (i>pow(10,2)) break;
+        //if (i>pow(10,6)) break;
 
 
         TVector3 gPos1 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32,layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);//{gPosX1, gPosY1, gPosZ1};
@@ -170,7 +190,7 @@ processFile(const std::string &filename,
             	}
             }
             //Creating the geometric Axial component once we've filled the values of ring comonents!
-            if (i>int(nEvents*0.1)){
+            if (i>int(nEvents*0.25)){
             	meanRingComponentVector = meanVector(ringComponentVector);
             	if(first_entry) {
             		auto minIt = std::min_element(ringComponentVector.begin(), ringComponentVector.end());
@@ -214,12 +234,13 @@ processFile(const std::string &filename,
 			  double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
 			  double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
 
-
-			  int strideLayer     = 1;
-			  int strideCrystal   = nLayers;
-			  int strideSubmodule = nLayers*nCrystalsTransaxial;// * nLayers;
-			  int strideModule    = nLayers*nCrystalsTransaxial;//nSubmodulesTransaxial * nCrystalsTransaxial * nLayers;
-			  int strideRsector   = nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial * nLayers;
+              //18D removing layers from transaxial elements (use central helper)
+              TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
+              int strideLayer     = ts.strideLayer;
+              int strideCrystal   = ts.strideCrystal;
+              int strideSubmodule = ts.strideSubmodule;
+              int strideModule    = ts.strideModule;
+              int strideRsector   = ts.strideRsector;
 
 			  //The need to use linear repeaters implies that if there is an axial component there cannot be a transaxial component
 			  //this results in no need for divisions over axial repetitions.
@@ -240,12 +261,13 @@ processFile(const std::string &filename,
 			  	  ringPosID2 += crystalID2 * strideCrystal;
 		  	  }
 
-			  int oldRadialID = abs(ringPosID1-ringPosID2);
-
+              
+/*
 			  if (nLayers > 1){
 				  ringPosID1 += layerID1 * strideLayer;
 			  	  ringPosID2 += layerID2 * strideLayer;
 		  }
+		  */
 			  //Since the radialID is computed as the difference between the two ringPosID,
 			  //the ringPosID1 before adding the rsector value already defines the intra
 			  //block position for each radialID:
@@ -254,14 +276,29 @@ processFile(const std::string &filename,
 			  ringPosID1 += rsectorID1 * strideRsector;
 			  ringPosID2 += rsectorID2 * strideRsector;
 
-			  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial*nLayers;
+			  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;//18D removing layers from total transaxial
 
 			  // Compute delta between the two transaxial detector indices
 			  int delta = abs(ringPosID1 - ringPosID2);
 
 
-			  // Fold the radial ID so that opposite orientations map to the same bin
-			  int radialID = std::min(delta, totalTransaxial - delta)-1;
+
+        // If delta is 0 or equals totalTransaxial then radialID becomes -1 -> debug and skip
+        if (delta == 0 || delta == totalTransaxial) {
+            int ringPosBefore1 = ringPosID1 - rsectorID1 * strideRsector;
+            int ringPosBefore2 = ringPosID2 - rsectorID2 * strideRsector;
+            std::cerr << "DEBUG: invalid delta encountered in processFile (delta=" << delta << ") -> radialID would be -1.\n"
+                      << " indices: layer1=" << layerID1 << ", module1=" << moduleID1 << ", submodule1=" << submoduleID1 << ", crystal1=" << crystalID1 << ", rsector1=" << rsectorID1 << "\n"
+                      << "          layer2=" << layerID2 << ", module2=" << moduleID2 << ", submodule2=" << submoduleID2 << ", crystal2=" << crystalID2 << ", rsector2=" << rsectorID2 << "\n"
+                      << " ringPos before rsector: " << ringPosBefore1 << " vs " << ringPosBefore2 << "\n"
+                      << " ringPos after rsector:  " << ringPosID1 << " vs " << ringPosID2 << "\n"
+                      << " strideRsector=" << strideRsector << ", totalTransaxial=" << totalTransaxial << "\n";
+            // Skip this invalid pairing; it should not contribute to transaxial bins
+            continue;
+        }
+
+        // Fold the radial ID so that opposite orientations map to the same bin
+        int radialID = std::min(delta, totalTransaxial - delta)-1;
 
 			  // Safety: ensure radialID stays within bounds
 			  // (expected size is totalTransaxial/2)
@@ -279,11 +316,9 @@ processFile(const std::string &filename,
 			  double effNormFactor = effFactorSubmodule*effFactorCrystal*effFactorLayer;
 
 
-			  radialComponentVector[radialID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
-			  oldRadialComponentVector[oldRadialID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
+              radialComponentVector[radialID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
 
-			  blockTrAComponentMatrix[radialID][trAID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
-			  oldBlockTrAComponentMatrix[oldRadialID][trAID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
+              blockTrAComponentMatrix[radialID][trAID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
 
 
         }
@@ -414,10 +449,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	std::cout<<"maxRadial ID = "<<maxRadialID<<" maxTrAID = "<<maxTrAID<<std::endl;
 
 	matrixRingsComponent		ringsComponentMatrix(maxRingID, std::vector<double>(maxRingID));
-	matrixRingsComponent		blockTrAComponentMatrix(maxRadialID,std::vector<double>(maxTrAID));
-	matrixRingsComponent		oldBlockTrAComponentMatrix(maxRadialID,std::vector<double>(maxTrAID));
-	vectorRadialComponent		radialComponentVector(maxRadialID,0.0);
-	vectorRadialComponent		oldRadialComponentVector(maxRadialID*2,0.0);
+  matrixRingsComponent		blockTrAComponentMatrix(maxRadialID,std::vector<double>(maxTrAID));
+  vectorRadialComponent		radialComponentVector(maxRadialID,0.0);
 	vectorRingComponent			ringComponentVector(maxRingID,0.0);
 
 	DetectorCounters detectorEfficyCounts(nSubmodulesTransaxial*nSubmodulesAxial, nCrystalsTransaxial*nCrystalsAxial,nLayers);
@@ -442,8 +475,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   double meanRadialComponentVector = 1;
   double meanBlockTrAComponentMatrix = 1;
 
-  double oldMeanRadialComponentVector = 1;
-  double oldMeanBlockTrAComponentMatrix = 1;
+  
 
   for(auto &fn : filenames) {
 
@@ -453,31 +485,27 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 	size_t newKeys, localMaxHits;
 	std::tie(newKeys, localMaxHits)
-	= processFile(fn,
-			ringsComponentMatrix,
-			meanRingsComponentMatrix,
-			blockTrAComponentMatrix,
-			oldBlockTrAComponentMatrix,
-			meanBlockTrAComponentMatrix,
-			oldMeanBlockTrAComponentMatrix,
-			radialComponentVector,
-			oldRadialComponentVector,
-			meanRadialComponentVector,
-			oldMeanRadialComponentVector,
-			ringComponentVector,
-			detectorEfficyCounts,
-			usedLOR,
-			totalEvents,
-            nRsectorsAngPos,
-            nRsectorsAxial,
-            invertDetOrder,
-            rsectorIdOrder,
-            nModulesTransaxial,
-            nModulesAxial,
-            nSubmodulesTransaxial,
-            nSubmodulesAxial,
-            nCrystalsTransaxial,
-            nCrystalsAxial,
+  = processFile(fn,
+        ringsComponentMatrix,
+        meanRingsComponentMatrix,
+        blockTrAComponentMatrix,
+        meanBlockTrAComponentMatrix,
+        radialComponentVector,
+        meanRadialComponentVector,
+        ringComponentVector,
+        detectorEfficyCounts,
+        usedLOR,
+        totalEvents,
+              nRsectorsAngPos,
+              nRsectorsAxial,
+              invertDetOrder,
+              rsectorIdOrder,
+              nModulesTransaxial,
+              nModulesAxial,
+              nSubmodulesTransaxial,
+              nSubmodulesAxial,
+              nCrystalsTransaxial,
+              nCrystalsAxial,
             nLayers,
             nCrystalPerLayer,
             nLayersRptTransaxial,
@@ -504,10 +532,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 	   if (fn.find("annular")!=std::string::npos){
 		   meanRadialComponentVector = meanVector(radialComponentVector);
-		   oldMeanRadialComponentVector = meanVector(oldRadialComponentVector);
 		   meanBlockTrAComponentMatrix = meanMatrix(blockTrAComponentMatrix);//
-		   oldMeanBlockTrAComponentMatrix = meanMatrix(oldBlockTrAComponentMatrix);//
-
 	   }
 
   }
@@ -515,22 +540,25 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
-  std::ofstream csv(outCSV);
-  //csv<<"c1,c2,effNF,blockFact,geomAxFact,geomTrAFact,CBNF\n";//,expNF,effSM,effC,effL\n";
+  // Commented out creation of most output Cdf files to avoid writing them.
+  // Keep files that contain "CB" and "effBfGAfGTrAf" in their names.
+  // Aggregated CSVs will be written after building the normalization arrays
 
-  std::ofstream normFile_blockFact(outputDir+outputMatrixFileName+"_blockFact_df.Cdf", std::ios::binary);
-  std::ofstream normFile_geomAxFact(outputDir+outputMatrixFileName+"_geomAxFact_df.Cdf", std::ios::binary);
-  std::ofstream normFile_geomTrAFact(outputDir+outputMatrixFileName+"_geomTrAFact_df.Cdf", std::ios::binary);
-  std::ofstream normFile_eff(outputDir+outputMatrixFileName+"_eff_df.Cdf", std::ios::binary);
-  std::ofstream normFile_intTrAf(outputDir+outputMatrixFileName+"_intTrAf_df.Cdf", std::ios::binary);
+  // Disabled: blockFact, geomAxFact, geomTrAFact, eff, intTrAf
+  // std::ofstream normFile_blockFact(outputDir+outputMatrixFileName+"_blockFact_df.Cdf", std::ios::binary);
+  // std::ofstream normFile_geomAxFact(outputDir+outputMatrixFileName+"_geomAxFact_df.Cdf", std::ios::binary);
+  // std::ofstream normFile_geomTrAFact(outputDir+outputMatrixFileName+"_geomTrAFact_df.Cdf", std::ios::binary);
+  // std::ofstream normFile_eff(outputDir+outputMatrixFileName+"_eff_df.Cdf", std::ios::binary);
+  // std::ofstream normFile_intTrAf(outputDir+outputMatrixFileName+"_intTrAf_df.Cdf", std::ios::binary);
 
+  // Keep CB outputs
   std::ofstream normFile_CB(outputDir+outputMatrixFileName+"_CB_df.Cdf", std::ios::binary);
-  std::ofstream normFile_oldCB(outputDir+outputMatrixFileName+"_oldCB_df.Cdf", std::ios::binary);
 
-  std::ofstream normFile_effBf(outputDir+outputMatrixFileName+"_effBf_df.Cdf", std::ios::binary);
-  std::ofstream normFile_effBfGAf(outputDir+outputMatrixFileName+"_effBfGAf_df.Cdf", std::ios::binary);
+  // Disabled: effBf and related intermediate products, except keep effBfGAfGTrAf
+  // std::ofstream normFile_effBf(outputDir+outputMatrixFileName+"_effBf_df.Cdf", std::ios::binary);
+  // std::ofstream normFile_effBfGAf(outputDir+outputMatrixFileName+"_effBfGAf_df.Cdf", std::ios::binary);
   std::ofstream normFile_effBfGAfGTrAf(outputDir+outputMatrixFileName+"_effBfGAfGTrAf_df.Cdf", std::ios::binary);
-  std::ofstream normFile_effBfGAfoGTrAf(outputDir+outputMatrixFileName+"_effBfGAfoGTrAf_df.Cdf", std::ios::binary);
+  std::ofstream normFile_CBsqrBfnI(outputDir+outputMatrixFileName+"_CBsqrBfnI_df.Cdf", std::ios::binary);
 
 
 
@@ -548,64 +576,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   int rsectorDiff = 0;
   double Navg = 0;
   int64_t LORinFOV=0;
-  //double radialNormFactor=0;
 
-  //To be computed at the end
-
-  //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/*
-//  std::string filename = "csv_files/Axial_elements.csv";
-
- // std::ofstream f = openCSV(filename);
-  //f << "type,index1,index2,value\n";
-
-  // ringsComponentMatrix (expected size: maxRingID x maybe varying cols)
-  for (size_t i = 0; i < ringsComponentMatrix.size(); ++i) {
-      const auto& row = ringsComponentMatrix[i];
-      for (size_t j = 0; j < row.size(); ++j) {
-          f << "rings_matrix," << i << "," << j << "," << row[j] << "\n";
-      }
-  }
-
-  // ringComponentVector (idx2 = -1 to avoid collision)
-  for (size_t i = 0; i < ringComponentVector.size(); ++i) {
-      f << "ring_vector," << i << ",-1," << ringComponentVector[i] << "\n";
-  }
-
-  //f.close();
-  std::cout << "Ring CSV written: " << filename << "\n";
-
-
-
-
-  //////////////////////////////////////////////////////
-  /////////////////////////// write radial elements
-  /////////////////////////////////////////////////
-  filename = "csv_files/Transaxial_elements.csv";
-
-  f = openCSV(filename);
-  f << "type,index1,index2,value\n";
-
-  // blockTrAComponentMatrix
-  for (size_t i = 0; i < blockTrAComponentMatrix.size(); ++i) {
-      const auto& row = blockTrAComponentMatrix[i];
-      for (size_t j = 0; j < row.size(); ++j) {
-          f << "blockTra_matrix," << i << "," << j << "," << row[j] << "\n";
-      }
-  }
-
-  // radialComponentVector (idx2 = -1)
-  for (size_t i = 0; i < radialComponentVector.size(); ++i) {
-      f << "radial_vector," << i << ",-1," << radialComponentVector[i] << "\n";
-  }
-
-  f.close();
-  std::cout << "Radial CSV written: " << filename << "\n";
-
-*/
 
 
   //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -625,44 +596,62 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 								  for (uint32_t rsectorID1 = 0; rsectorID1 < nRsectorsAngPos*nRsectorsAxial; ++rsectorID1) {
 									  for (uint32_t rsectorID2 = 0; rsectorID2 < nRsectorsAngPos*nRsectorsAxial; ++rsectorID2) {
 
+                        //Applying an "R = 300 mm" filter
+
+                        // Compute transaxial component of rsectorID (handles axial repeats)
+                        int rsectorTrs1, rsectorTrs2;
+                        if (rsectorIdOrder == 0) {
+                          rsectorTrs1 = rsectorID1 % nRsectorsAngPos;
+                          rsectorTrs2 = rsectorID2 % nRsectorsAngPos;
+                        } else {
+                          // axial-first ordering
+                          rsectorTrs1 = rsectorID1 / nRsectorsAxial;
+                          rsectorTrs2 = rsectorID2 / nRsectorsAxial;
+                        }
+
+                        // Circular difference on transaxial sectors (wrap-around aware)
+                        int absDiff = std::abs(rsectorTrs1 - rsectorTrs2);
+                        int circDiff = std::min(absDiff, int(nRsectorsAngPos) - absDiff);
+
+                        if (circDiff < 4)
+                          continue;
+                        if (circDiff == 4) {
+                          if ((nSubmodulesTransaxial != 0) && (abs(submoduleID1 - submoduleID2) < 13))
+                            continue;
+                          else if ((nCrystalsTransaxial != 0) && (abs(crystalID1 - crystalID2) < 13))
+                            continue;
+                        }
+
+                        //Computing the castor ID's
+
+                        int castorID1 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
+                          nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
+                          nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
+                          nLayersRptTransaxial, nLayersRptAxial,
+                          layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);
+
+                        int castorID2 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
+                          nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
+                          nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
+                          nLayersRptTransaxial, nLayersRptAxial,
+                          layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);
+
+                        // Only process unordered pairs once (castorID1 > castorID2)
+                        if (castorID1 <= castorID2)
+                          continue;
+
+                        // Count this unique LOR
+                        LORinFOV++;
 
 
 
-										  //Applying an "R = 300 mm" filter
 
-										  if (abs(rsectorID1 - rsectorID2)< 4)
-											  continue;
-										  if (abs(rsectorID1 - rsectorID2) == 4){
-											  if((nSubmodulesTransaxial!=0)&(abs(submoduleID1 - submoduleID2)<13))
-												  continue;
-											  else if((nCrystalsTransaxial!=0)&(abs(crystalID1 - crystalID2)<13))
-												  continue;
-										  }
-
-
-										  LORinFOV++;
-
-
-
-										  //Computing the castor ID's
-
-										  int castorID1 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
-												  nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
-												  nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
-												  nLayersRptTransaxial, nLayersRptAxial,
-												  layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);
-
-										  int castorID2 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
-												  nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
-												  nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
-												  nLayersRptTransaxial, nLayersRptAxial,
-												  layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);
-
-										  int strideLayer     = 1;
-										  int strideCrystal   = nLayers;
-										  int strideSubmodule = nCrystalsTransaxial * nLayers;
-										  int strideModule    = nSubmodulesTransaxial * nCrystalsTransaxial * nLayers;
-										  int strideRsector   = nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial * nLayers;
+                                          TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
+                                          int strideLayer     = ts.strideLayer;
+                                          int strideCrystal   = ts.strideCrystal;
+                                          int strideSubmodule = ts.strideSubmodule;
+                                          int strideModule    = ts.strideModule;
+                                          int strideRsector   = ts.strideRsector;
 
 										  int ringPosID1 = 0;
 										  int ringPosID2 = 0;
@@ -679,13 +668,12 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 											  ringPosID1 += crystalID1 * strideCrystal;
 										  	  ringPosID2 += crystalID2 * strideCrystal;
 									  	  }
-										  ////////////////////////NOTICE//////////////////////////////////////////////
-										  int oldRadialID = abs(ringPosID1 - ringPosID2);////////////////////////////////////////////////////////////////////////////////////
-										   ///////////////////////////////////////////////////////////////////////////
-										  if (nLayers > 1){
+
+										  /*
+                       if (nLayers > 1){
 											  ringPosID1 += layerID1 * strideLayer;
 										  	  ringPosID2 += layerID2 * strideLayer;
-									  }
+									  }*/
 										  //Since the radialID is computed as the difference between the two ringPosID,
 										  //the ringPosID1 before adding the rsector value already defines the intra
 										  //block position for each radialID:
@@ -693,18 +681,34 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  ringPosID1 += rsectorID1 * strideRsector;
 										  ringPosID2 += rsectorID2 * strideRsector;
 
-										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial*nLayers;
-
+										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;//*nLayers; 18D removign nlayersfrom transaxial
 
 										  // Compute delta between the two transaxial detector indices
 										  int delta = abs(ringPosID1 - ringPosID2);
 
-										  // Fold the radial ID so that opposite orientations map to the same bin
-										  int radialID = std::min(delta, totalTransaxial - delta)-1;
+                      // If delta is 0 or equals totalTransaxial then radialID becomes -1 -> debug and skip
+                      if (delta == 0 || delta == totalTransaxial) {
+                          int ringPosBefore1 = ringPosID1 - rsectorID1 * strideRsector;
+                          int ringPosBefore2 = ringPosID2 - rsectorID2 * strideRsector;
+                          std::cerr << "DEBUG: invalid delta encountered (delta=" << delta << ") -> radialID would be -1.\n"
+                                    << " indices: layer1=" << layerID1 << ", module1=" << moduleID1 << ", submodule1=" << submoduleID1 << ", crystal1=" << crystalID1 << ", rsector1=" << rsectorID1 << "\n"
+                                    << "          layer2=" << layerID2 << ", module2=" << moduleID2 << ", submodule2=" << submoduleID2 << ", crystal2=" << crystalID2 << ", rsector2=" << rsectorID2 << "\n"
+                                    << " ringPos before rsector: " << ringPosBefore1 << " vs " << ringPosBefore2 << "\n"
+                                    << " ringPos after rsector:  " << ringPosID1 << " vs " << ringPosID2 << "\n"
+                                    << " strideRsector=" << strideRsector << ", totalTransaxial=" << totalTransaxial << "\n";
+                          // Skip this invalid pairing; it should not contribute to transaxial bins
+                          continue;
+                      }
+
+                      // Fold the radial ID so that opposite orientations map to the same bin
+                      int radialID = std::min(delta, totalTransaxial - delta)-1;
 										  // Safety: ensure radialID stays within bounds
 										  // (expected size is totalTransaxial/2)
 										  if (radialID < 0 || radialID > totalTransaxial*0.5) {
 										      std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
+										  }
+										  else if(radialID == totalTransaxial*0.5-1){
+											  radialID = totalTransaxial*0.5-2; //Attempt to try to repair the wierd last bin effect.
 										  }
 										  if (trAID < 0 || trAID >= maxTrAID) {
 										      std::cerr << "BAD trAID = " << trAID
@@ -728,32 +732,20 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
-										  double transaxialGeomNormFactor = meanRadialComponentVector/radialComponentVector[radialID];
-										  double oldTransaxialGeomNormFactor = oldMeanRadialComponentVector/oldRadialComponentVector[oldRadialID];
+                      double transaxialGeomNormFactor = 0.0;
+                      if (radialComponentVector[radialID] != 0.0)
+                        transaxialGeomNormFactor = meanRadialComponentVector / radialComponentVector[radialID];
 
-										  double interferenceTraFactor = meanBlockTrAComponentMatrix/(transaxialGeomNormFactor*blockTrAComponentMatrix[radialID][trAID]);
-										  double oldInterferenceTraFactor = oldMeanBlockTrAComponentMatrix/(oldTransaxialGeomNormFactor*oldBlockTrAComponentMatrix[oldRadialID][trAID]);
+                      double interferenceTraFactor = 0.0;
+                      if (transaxialGeomNormFactor != 0.0 && blockTrAComponentMatrix[radialID][trAID] != 0.0)
+                        interferenceTraFactor = meanBlockTrAComponentMatrix / (transaxialGeomNormFactor * blockTrAComponentMatrix[radialID][trAID]);
 
-										  double CBasedNF = effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor*interferenceTraFactor;
-										  double oldCBasedNF = effNormFactor*blockCorrection*geomAxCorrection*oldTransaxialGeomNormFactor*oldInterferenceTraFactor;
+                      double CBasedNF = effNormFactor * blockCorrection * geomAxCorrection * transaxialGeomNormFactor * interferenceTraFactor;
 
-//										  csv<<castorID1<<","<<castorID2<<","<<effNormFactor<<","<<blockCorrection<<","<<geomAxCorrection<<","<<transaxialGeomNormFact//or<<","<<CBasedNF<<std::endl;
+                                          writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, castorID2, castorID1, effNormFactor*blockCorrection*blockCorrection*geomAxCorrection*transaxialGeomNormFactor); // disabled
+                                          writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
+                                          writeNormEntryNormMatrixFile(normFile_CB, castorID2, castorID1, CBasedNF);
 
-
-										  writeNormEntryNormMatrixFile(normFile_eff, castorID2, castorID1, effNormFactor); //test changing te order to accomodate the values
-										  writeNormEntryNormMatrixFile(normFile_blockFact, castorID2, castorID1, blockCorrection);
-										  writeNormEntryNormMatrixFile(normFile_geomAxFact, castorID2, castorID1, geomAxCorrection);
-										  writeNormEntryNormMatrixFile(normFile_geomTrAFact, castorID2, castorID1, transaxialGeomNormFactor);
-										  writeNormEntryNormMatrixFile(normFile_intTrAf, castorID2, castorID1, interferenceTraFactor);
-										  writeNormEntryNormMatrixFile(normFile_effBf, castorID2, castorID1, effNormFactor*blockCorrection); //test changing te order to accomodate the values
-										  writeNormEntryNormMatrixFile(normFile_effBfGAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection);
-										  writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
-										  writeNormEntryNormMatrixFile(normFile_effBfGAfoGTrAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection*oldTransaxialGeomNormFactor);
-
-										  writeNormEntryNormMatrixFile(normFile_CB, castorID2, castorID1, CBasedNF); //test changing the order to accomodate the values
-										  writeNormEntryNormMatrixFile(normFile_oldCB, castorID2, castorID1, oldCBasedNF); //test changing the order to accomodate the values
-
-										 // std::cout<<"castorID1 = "<<castorID1<<" and castorID2 = "<<castorID2<<std::endl;
 
 
 									  }
@@ -771,86 +763,127 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   //std::cout<<"Average number of coincidences per LOR is "<<Navg<<" with usedLOR "<<usedLOR<<" while LOR in the FOV are "<< LORinFOV <<std::endl;
   std::cout<<"Total number of events so far is: "<<totalEvents<<std::endl;
 
+  // Diagnostic: report radial-vector occupancy and key geometry/stride params
+  {
+    size_t firstNonZero = radialComponentVector.size();
+    size_t lastNonZero = 0;
+    size_t nonZeroCount = 0;
+    for (size_t i = 0; i < radialComponentVector.size(); ++i) {
+      if (radialComponentVector[i] != 0.0) {
+        ++nonZeroCount;
+        if (firstNonZero == radialComponentVector.size()) firstNonZero = i;
+        lastNonZero = i;
+      }
+    }
+
+    int64_t totalTransaxial = int64_t(nRsectorsAngPos) * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
+    int64_t strideRsector_with_layers = int64_t(nModulesTransaxial) * nSubmodulesTransaxial * nCrystalsTransaxial * nLayers;
+    int64_t strideRsector_no_layers = int64_t(nModulesTransaxial) * nSubmodulesTransaxial * nCrystalsTransaxial;
+
+    std::cout << "Radial diagnostic: nonZeroCount=" << nonZeroCount
+              << ", firstNonZero=" << (firstNonZero == radialComponentVector.size() ? -1 : (int)firstNonZero)
+              << ", lastNonZero=" << (nonZeroCount ? (int)lastNonZero : -1)
+              << ", maxRadialID=" << maxRadialID
+              << ", totalTransaxial=" << totalTransaxial
+              << ", nRsectorsAngPos=" << nRsectorsAngPos
+              << ", nModulesTransaxial=" << nModulesTransaxial
+              << ", nSubmodulesTransaxial=" << nSubmodulesTransaxial
+              << ", nCrystalsTransaxial=" << nCrystalsTransaxial
+              << ", nLayers=" << (int)nLayers
+              << std::endl;
+
+    std::cout << "StrideRsector (with layers)=" << strideRsector_with_layers
+              << ", (no layers)=" << strideRsector_no_layers << std::endl;
+
+    if (nonZeroCount) {
+      std::cout << "Radial sample around first non-zero index (up to 8 entries):\n";
+      size_t start = firstNonZero;
+      size_t end = std::min(radialComponentVector.size(), start + 8);
+      for (size_t i = start; i < end; ++i)
+        std::cout << "  idx=" << i << ", val=" << radialComponentVector[i] << std::endl;
+    }
+  }
+
+  // --- aggregated CSV outputs (indexed access) ---------------------------------
+  // These are much smaller than per-LOR logging and can be indexed by user.
+  // 1) block_geom: per ring pair -> blockCorrection, geomAxCorrection
+  {
+    std::ofstream csvBlockGeom(outputDir + outputMatrixFileName + "_block_geom.csv");
+    csvBlockGeom << "ring1,ring2,blockCorrection,geomAxCorrection\n";
+    for (size_t i = 0; i < ringsComponentMatrix.size(); ++i) {
+      for (size_t j = 0; j < ringsComponentMatrix[i].size(); ++j) {
+        double blockCorr = 0.0;
+        if (ringComponentVector[i] != 0.0 && ringComponentVector[j] != 0.0)
+          blockCorr = sqrt(meanRingComponentVector * meanRingComponentVector / (ringComponentVector[i] * ringComponentVector[j]));
+        double geomAxCorr = 0.0;
+        if (ringsComponentMatrix[i][j] != 0.0)
+          geomAxCorr = meanRingsComponentMatrix / (ringsComponentMatrix[i][j]);
+        csvBlockGeom << i << "," << j << "," << blockCorr << "," << geomAxCorr << "\n";
+      }
+    }
+    csvBlockGeom.close();
+  }
+
+  // 2) transaxial: per radialID -> transaxialGeomNormFactor
+  {
+    std::ofstream csvTrans(outputDir + outputMatrixFileName + "_transaxial.csv");
+    csvTrans << "radialID,transaxialGeomNormFactor\n";
+    for (size_t r = 0; r < radialComponentVector.size(); ++r) {
+      double tgnf = 0.0;
+      if (radialComponentVector[r] != 0.0)
+        tgnf = meanRadialComponentVector / radialComponentVector[r];
+      csvTrans << r << "," << tgnf << "\n";
+    }
+    csvTrans.close();
+  }
+
+  // 3) interference: per (radialID, trAID) -> interferenceTraFactor
+  {
+    std::ofstream csvInterf(outputDir + outputMatrixFileName + "_interference.csv");
+    csvInterf << "radialID,trAID,interferenceTraFactor\n";
+    for (size_t r = 0; r < blockTrAComponentMatrix.size(); ++r) {
+      for (size_t t = 0; t < blockTrAComponentMatrix[r].size(); ++t) {
+        double tgnf = 0.0;
+        if (radialComponentVector[r] != 0.0)
+          tgnf = meanRadialComponentVector / radialComponentVector[r];
+        double denom = tgnf * blockTrAComponentMatrix[r][t];
+        double interf = 0.0;
+        if (denom != 0.0)
+          interf = meanBlockTrAComponentMatrix / denom;
+        csvInterf << r << "," << t << "," << interf << "\n";
+      }
+    }
+    csvInterf.close();
+  }
+  // ---------------------------------------------------------------------------
+
 
   std::cout<<"Do we know know what the outputMatrixfilename is "<<outputMatrixFileName<<std::endl;
 
 
 
-  std::cout<<"Creating header for "<<outputMatrixFileName<<"_blockFact"<<std::endl;
-    writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_blockFact",
-                          scannerName,
-						  LORinFOV);
+    // (headers and binary closes handled below)
 
-    std::cout<<"Creating header for "<<outputMatrixFileName<<"_geomAxFact"<<std::endl;
-    writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_geomAxFact",
-                          scannerName,
-                          LORinFOV);
+    std::cout<<"Creating header for "<<outputMatrixFileName<<"_effBfGAfGTrAf"<<std::endl;
+    writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_effBfGAfGTrAf",
+                        scannerName,
+                        LORinFOV);
 
-  std::cout<<"Creating header for "<<outputMatrixFileName<<"_geomTrAFact"<<std::endl;
-  writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_geomTrAFact",
-                      scannerName,
-					  LORinFOV);
-
-  std::cout<<"Creating header for "<<outputMatrixFileName<<"_intTrAf"<<std::endl;
-   writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_intTrAf",
- 		  	  	  	  scannerName,
- 					  LORinFOV);
-
-  std::cout<<"Creating header for "<<outputMatrixFileName<<"_eff"<<std::endl;
-   writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_eff",
- 		  	  	  	  scannerName,
- 					  LORinFOV);
-
-
-
-   std::cout<<"Creating header for "<<outputMatrixFileName<<"_effBf"<<std::endl;
-    writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_effBf",
-  		  	  	  	  scannerName,
-  					  LORinFOV);
-
-
-    std::cout<<"Creating header for "<<outputMatrixFileName<<"_effBfGAf"<<std::endl;
-     writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_effBfGAf",
-   		  	  	  	  scannerName,
-   					  LORinFOV);
-
-     std::cout<<"Creating header for "<<outputMatrixFileName<<"_effBfGAfGTrAf"<<std::endl;
-      writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_effBfGAfGTrAf",
-    		  	  	  	  scannerName,
-    					  LORinFOV);
-      std::cout<<"Creating header for "<<outputMatrixFileName<<"_effBfGAfoGTrAf"<<std::endl;
-       writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_effBfGAfoGTrAf",
-     		  	  	  	  scannerName,
-     					  LORinFOV);
+  std::cout<<"Creating header for "<<outputMatrixFileName<<"_CBsqrBfnI"<<std::endl;
+   writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_CBsqrBfnI",
+                         scannerName,
+                         LORinFOV);
 
   std::cout<<"Creating header for "<<outputMatrixFileName<<"_CB"<<std::endl;
   writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_CB",
                       scannerName,
-					  LORinFOV);
-
-  std::cout<<"Creating header for "<<outputMatrixFileName<<"_oldCB"<<std::endl;
-    writeCdhHeaderNormMatrixFile(outputDir,outputMatrixFileName+"_oldCB",
-                        scannerName,
-  					  LORinFOV);
+                      LORinFOV);
 
 
 
-
-
-
-  //csv.close();
-  normFile_blockFact.close();
-  normFile_geomAxFact.close();
-  normFile_geomTrAFact.close();
-  normFile_eff.close();
-  normFile_intTrAf.close();
-
-  normFile_effBf.close();
-  normFile_effBfGAf.close();
-  normFile_effBfGAfGTrAf.close();
-
-  normFile_CB.close();
-  normFile_oldCB.close();
+             normFile_CB.close();
+             normFile_effBfGAfGTrAf.close();
+             normFile_CBsqrBfnI.close();          
 }
 
 
