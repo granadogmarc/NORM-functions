@@ -681,7 +681,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  ringPosID1 += rsectorID1 * strideRsector;
 										  ringPosID2 += rsectorID2 * strideRsector;
 
-										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;//*nLayers; 18D removign nlayersfrom transaxial
+										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;// *nLayers; 18D removign nlayersfrom transaxial
 
 										  // Compute delta between the two transaxial detector indices
 										  int delta = abs(ringPosID1 - ringPosID2);
@@ -1389,7 +1389,7 @@ TVector3 convertToPosition(double x0, double y0, double z0,
     // Compute position within the crystal (local coordinates)
     double x = x0 + layerID * 5.0;
     double y = y0 + crystalID * 3.6875;
-    double z = z0 + submoduleID * 3.6875;
+    double z = z0 + submoduleID * 3.6875*0.5;
 
     TVector3 localPos(x, y, z);
 
