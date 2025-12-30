@@ -167,6 +167,21 @@ int main(int argc,char**argv) {
   nLayersRptAxial = 1;
  }
 
+ else if (scannerName =="32x16x2_4rings_system"){
+
+  nRsectorsAngPos = 32;
+  nRsectorsAxial = 1;
+  nModulesTransaxial = 1;
+  nModulesAxial = 4;
+  nSubmodulesTransaxial = 1;
+  nSubmodulesAxial = 32;
+  nCrystalsTransaxial = 16;
+  nCrystalsAxial = 1;
+  nLayers = 2;
+  nLayersRptTransaxial = 1;
+  nLayersRptAxial = 1;
+ }
+
  else{ std::cerr << "Error: no system provided from the expected list\n";
  return 1;}
 
