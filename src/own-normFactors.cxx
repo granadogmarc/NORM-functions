@@ -122,6 +122,10 @@ int main(int argc,char**argv) {
   uint32_t nCrystalsTransaxial, nCrystalsAxial;
   uint8_t nLayers;
   uint32_t nLayersRptTransaxial, nLayersRptAxial;
+  double axialSize = 59; // in mm
+  double transAxialSize = 59; // in mm
+  double depth = 10; // in mm	
+  // Define system parameters based on scannerName
 
  if (scannerName=="CM2L_1ring_system"){
 
@@ -180,6 +184,7 @@ else if (scannerName =="32x16x2_4rings_system"){
   nLayers = 2;
   nLayersRptTransaxial = 1;
   nLayersRptAxial = 1;
+
  }
 
 
@@ -265,8 +270,10 @@ else if (scannerName =="32x16x2_4rings_system"){
           nLayersRptAxial,
           myPhantom,
           emptyPhantom,
-		  crystalDepth,
-          detectorRadius,
+		transAxialSize,
+		axialSize,
+		crystalDepth,
+	    detectorRadius,
 		  outputMatrixFileName+".csv");
 
   return 0;
