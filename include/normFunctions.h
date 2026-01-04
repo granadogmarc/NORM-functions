@@ -449,8 +449,10 @@ std::pair<size_t, size_t> processFile( const std::string &filename,
                   uint32_t          nLayersRptAxial,
                   const Phantom    &myPhantom,
                   const Phantom    &emptyPhantom,
-				  float				crystalDepth,
-                  float             detectorRadius
+                                    float			crystalDepth,
+                                    float             detectorRadius,
+                                    float             transAxialSize,
+                                    float             axialSize
                 );
 
 
@@ -474,6 +476,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         uint32_t nLayersRptAxial,
         const Phantom &myPhantom,
         const Phantom &emptyPhantom,
+        float transAxialSize,
+        float axialSize,
 		float	crystalDepth,
         float detectorRadius,
         const std::string &outCSV
@@ -556,7 +560,13 @@ TVector3 convertToPosition(double x0, double y0, double z0,
                            double deltaPhi,
                            int layerID, int crystalID,
                            int submoduleID, int moduleID,
-                           int rsectorID);
+                           int rsectorID,
+                           float crystalDepth,
+                           float transAxialSize,
+                           float axialSize,
+                           uint8_t nLayers,
+                           uint32_t nCrystalsTransaxial,
+                           uint32_t nSubmodulesAxial);
 
 uint32_t ReducedID(uint32_t nRsectorsAngPos,
                           uint32_t nRsectorsAxial,

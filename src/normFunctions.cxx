@@ -58,8 +58,10 @@ processFile(const std::string &filename,
       uint32_t nLayersRptAxial,
             const Phantom &myPhantom,
       const Phantom &emptyPhantom,
-      float crystalDepth,
-            float detectorRadius)
+  float crystalDepth,
+    float detectorRadius,
+    float transAxialSize,
+    float axialSize)
 {
     size_t newKeys = 0;
     size_t localMax = 0;
@@ -122,8 +124,10 @@ processFile(const std::string &filename,
         //if (i>pow(10,6)) break;
 
 
-        TVector3 gPos1 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32,layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);//{gPosX1, gPosY1, gPosZ1};
-        TVector3 gPos2 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32.,layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);//{gPosX2, gPosY2, gPosZ2};
+        TVector3 gPos1 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32,layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1,
+                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
+        TVector3 gPos2 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32.,layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2,
+                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
 
         int castorID1 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
                                              nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
@@ -231,8 +235,8 @@ processFile(const std::string &filename,
 			  int ringID1 = moduleID1+nModulesAxial*submoduleID1; //TODO generalise it for all geometric cases
 			  int ringID2 = moduleID2+nModulesAxial*submoduleID2; //TODO generalise it for all geometric cases
 
-			  double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
-			  double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
+                                          double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
+                                          double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
 
               //18D removing layers from transaxial elements (use central helper)
               TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
@@ -402,8 +406,8 @@ std::cout<<"Max castorID is "<<maxCastorID<<std::endl;
 
 
 void computeNormalizationFactors( const std::vector<std::string> &filenames, const std::string& scannerName,
-		const std::string& outputDir,
-		const std::string& outputMatrixFileName,
+    const std::string& outputDir,
+    const std::string& outputMatrixFileName,
         uint32_t nRsectorsAngPos,
         uint32_t nRsectorsAxial,
         bool     invertDetOrder,
@@ -418,11 +422,13 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         uint32_t* nCrystalPerLayer,
         uint32_t nLayersRptTransaxial,
         uint32_t nLayersRptAxial,
-        const Phantom &myPhantom,
-        const Phantom &emptyPhantom,
-		float crystalDepth,
-        float detectorRadius,
-        const std::string &outCSV
+    const Phantom &myPhantom,
+    const Phantom &emptyPhantom,
+    float transAxialSize,
+    float axialSize,
+    float crystalDepth,
+    float detectorRadius,
+    const std::string &outCSV
       )
 {
 
@@ -513,7 +519,9 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
             myPhantom,
             emptyPhantom,
 			crystalDepth,
-            detectorRadius);
+            detectorRadius,
+            transAxialSize,
+            axialSize);
 
 	   mapSize       += newKeys;
 	   overallMaxHits = std::max(overallMaxHits, localMaxHits);
@@ -571,6 +579,70 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
+
+  // ------------------------------------------------------------------
+  // Compute per-row/ per-radial means for component-wise normalization
+  // blockCorrection: per ring1 mean over ring2
+  // geomAxCorrection: per ring1 mean over ring2
+  // transaxialGeomNormFactor: global mean over radialIDs
+  // interferenceTraFactor: per radialID mean over trAID (after transaxial normalization)
+  // ------------------------------------------------------------------
+
+  // Compute global means for normalization (global per-component normalization)
+  // 1) blockCorrection and geomAxCorrection: global means over all valid ring pairs
+  long double sb_total = 0.0L; uint64_t cb_total = 0;
+  long double sg_total = 0.0L; uint64_t cg_total = 0;
+  for (int r1 = 0; r1 < maxRingID; ++r1) {
+    double rc1 = ringComponentVector[r1];
+    for (int r2 = 0; r2 < maxRingID; ++r2) {
+      double rc2 = ringComponentVector[r2];
+      if (rc1 > 0.0 && rc2 > 0.0) {
+        long double bc = std::sqrt((long double)meanRingComponentVector*(long double)meanRingComponentVector/((long double)rc1*(long double)rc2));
+        sb_total += bc; ++cb_total;
+      }
+      double rm = ringsComponentMatrix[r1][r2];
+      if (rm != 0.0) {
+        long double gc = (long double)meanRingsComponentMatrix / (long double)rm;
+        sg_total += gc; ++cg_total;
+      }
+    }
+  }
+  double mean_block_global = (cb_total ? double(sb_total / cb_total) : 1.0);
+  double mean_geomAx_global = (cg_total ? double(sg_total / cg_total) : 1.0);
+
+  // 2) transaxialGeomNormFactor: compute normalized transaxial factor per radialID (global-normalized vector)
+  size_t nRad = radialComponentVector.size();
+  std::vector<double> norm_transaxial(nRad, 1.0);
+  long double s_t = 0.0L; uint64_t c_t = 0;
+  for (size_t r = 0; r < nRad; ++r) {
+    double rv = radialComponentVector[r];
+    if (rv != 0.0) {
+      long double t = (long double)meanRadialComponentVector / (long double)rv;
+      s_t += t; ++c_t;
+    }
+  }
+  long double mean_t = (c_t ? s_t / c_t : 1.0L);
+  for (size_t r = 0; r < nRad; ++r) {
+    double rv = radialComponentVector[r];
+    if (rv != 0.0)
+      norm_transaxial[r] = double(((long double)meanRadialComponentVector / (long double)rv) / mean_t);
+    else
+      norm_transaxial[r] = 1.0;
+  }
+
+  // 3) interference: compute a single global mean over all (radial,trA) valid entries
+  long double si_total = 0.0L; uint64_t ci_total = 0;
+  for (size_t r = 0; r < nRad; ++r) {
+    double ntr = norm_transaxial[r];
+    for (size_t t = 0; t < blockTrAComponentMatrix[r].size(); ++t) {
+      double b = blockTrAComponentMatrix[r][t];
+      if (b != 0.0 && ntr != 0.0) {
+        long double interf = (long double)meanBlockTrAComponentMatrix / ((long double)ntr * (long double)b);
+        si_total += interf; ++ci_total;
+      }
+    }
+  }
+  double mean_interf_global = (ci_total ? double(si_total / ci_total) : 1.0);
 
   DetectorIndices d1,d2;
   int rsectorDiff = 0;
@@ -640,8 +712,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
                         if (castorID1 <= castorID2)
                           continue;
 
-                        // Count this unique LOR
-                        LORinFOV++;
+                        // Count this unique LOR only when we actually write it
+                        // (increment moved down to where entries are written)
 
 
 
@@ -681,7 +753,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  ringPosID1 += rsectorID1 * strideRsector;
 										  ringPosID2 += rsectorID2 * strideRsector;
 
-										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;//*nLayers; 18D removign nlayersfrom transaxial
+										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;// *nLayers; 18D removign nlayersfrom transaxial
 
 										  // Compute delta between the two transaxial detector indices
 										  int delta = abs(ringPosID1 - ringPosID2);
@@ -732,19 +804,27 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
-                      double transaxialGeomNormFactor = 0.0;
-                      if (radialComponentVector[radialID] != 0.0)
-                        transaxialGeomNormFactor = meanRadialComponentVector / radialComponentVector[radialID];
+                      double transaxialGeomNormFactor = 1.0;
+                      if (radialID >= 0 && size_t(radialID) < norm_transaxial.size())
+                        transaxialGeomNormFactor = norm_transaxial[radialID];
+
+                      double norm_block = (mean_block_global != 0.0) ? blockCorrection / mean_block_global : blockCorrection;
+                      double norm_geomAx = (mean_geomAx_global != 0.0) ? geomAxCorrection / mean_geomAx_global : geomAxCorrection;
 
                       double interferenceTraFactor = 0.0;
-                      if (transaxialGeomNormFactor != 0.0 && blockTrAComponentMatrix[radialID][trAID] != 0.0)
+                      if (transaxialGeomNormFactor != 0.0 && blockTrAComponentMatrix[radialID][trAID] != 0.0) {
                         interferenceTraFactor = meanBlockTrAComponentMatrix / (transaxialGeomNormFactor * blockTrAComponentMatrix[radialID][trAID]);
+                        if (mean_interf_global != 0.0)
+                          interferenceTraFactor /= mean_interf_global;
+                      }
 
-                      double CBasedNF = effNormFactor * blockCorrection * geomAxCorrection * transaxialGeomNormFactor * interferenceTraFactor;
+                      double CBasedNF = effNormFactor * norm_block * norm_geomAx * transaxialGeomNormFactor * interferenceTraFactor;
 
-                                          writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, castorID2, castorID1, effNormFactor*blockCorrection*blockCorrection*geomAxCorrection*transaxialGeomNormFactor); // disabled
-                                          writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
-                                          writeNormEntryNormMatrixFile(normFile_CB, castorID2, castorID1, CBasedNF);
+                      // Increment written-LOR counter and write normalized entries
+                      LORinFOV++;
+                      writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, castorID2, castorID1, effNormFactor*norm_block*norm_block*norm_geomAx*transaxialGeomNormFactor); // disabled
+                      writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*norm_block*norm_geomAx*transaxialGeomNormFactor);
+                      writeNormEntryNormMatrixFile(normFile_CB, castorID2, castorID1, CBasedNF);
 
 
 
@@ -1381,25 +1461,38 @@ TVector3 applyRotation(const TVector3& pos, double angle) {
 }
 
 TVector3 convertToPosition(double x0, double y0, double z0,
-                           double deltaPhi,
-                           int layerID, int crystalID,
-                           int submoduleID, int moduleID,
-                           int rsectorID) {
+               double deltaPhi,
+               int layerID, int crystalID,
+               int submoduleID, int moduleID,
+               int rsectorID,
+               float crystalDepth,
+               float transAxialSize,
+               float axialSize,
+               uint8_t nLayers,
+               uint32_t nCrystalsTransaxial,
+               uint32_t nSubmodulesAxial) {
 
-    // Compute position within the crystal (local coordinates)
-    double x = x0 + layerID * 5.0;
-    double y = y0 + crystalID * 3.6875;
-    double z = z0 + submoduleID * 3.6875;
+  // Compute variable displacements according to TODOs:
+  // - layer thickness = crystalDepth / nLayers
+  // - crystal transaxial pitch = transAxialSize / nCrystalsTransaxial
+  // - submodule axial pitch = axialSize / nSubmodulesAxial
+  double layerThickness = (nLayers > 0) ? (crystalDepth / static_cast<double>(nLayers)) : 0.0;
+  double crystalPitch = (nCrystalsTransaxial > 0) ? (transAxialSize / static_cast<double>(nCrystalsTransaxial)) : 0.0;
+  double submodulePitch = (nSubmodulesAxial > 0) ? (axialSize / static_cast<double>(nSubmodulesAxial)) : 0.0;
 
-    TVector3 localPos(x, y, z);
+  double x = x0 + layerID * layerThickness;
+  double y = y0 + crystalID * crystalPitch;
+  double z = z0 + submoduleID * submodulePitch;
 
-    // Apply rotation around Z (to place it in the correct angular sector)
-    TVector3 rotated = applyRotation(localPos, rsectorID * deltaPhi);
+  TVector3 localPos(x, y, z);
 
-    // Shift by moduleID in Z
-    rotated.SetZ(rotated.Z() + moduleID * 63.0);
+  // Apply rotation around Z (to place it in the correct angular sector)
+  TVector3 rotated = applyRotation(localPos, rsectorID * deltaPhi);
 
-    return rotated;
+  // Preserve original module Z-shift behavior (use existing constant)
+  rotated.SetZ(rotated.Z() + moduleID * 63.0);
+
+  return rotated;
 }
 
 double meanVector(const std::vector<double>& v)

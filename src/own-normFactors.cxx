@@ -122,6 +122,10 @@ int main(int argc,char**argv) {
   uint32_t nCrystalsTransaxial, nCrystalsAxial;
   uint8_t nLayers;
   uint32_t nLayersRptTransaxial, nLayersRptAxial;
+  double axialSize = 59; // in mm
+  double transAxialSize = 59; // in mm
+  double depth = 10; // in mm	
+  // Define system parameters based on scannerName
 
  if (scannerName=="CM2L_1ring_system"){
 
@@ -166,6 +170,23 @@ int main(int argc,char**argv) {
   nLayersRptTransaxial = 1;
   nLayersRptAxial = 1;
  }
+
+else if (scannerName =="32x16x2_4rings_system"){
+
+  nRsectorsAngPos = 32;
+  nRsectorsAxial = 1;
+  nModulesTransaxial = 1;
+  nModulesAxial = 4;
+  nSubmodulesTransaxial = 1;
+  nSubmodulesAxial = 32;
+  nCrystalsTransaxial = 16;
+  nCrystalsAxial = 1;
+  nLayers = 2;
+  nLayersRptTransaxial = 1;
+  nLayersRptAxial = 1;
+
+ }
+
 
  else{ std::cerr << "Error: no system provided from the expected list\n";
  return 1;}
@@ -249,8 +270,10 @@ int main(int argc,char**argv) {
           nLayersRptAxial,
           myPhantom,
           emptyPhantom,
-		  crystalDepth,
-          detectorRadius,
+		transAxialSize,
+		axialSize,
+		crystalDepth,
+	    detectorRadius,
 		  outputMatrixFileName+".csv");
 
   return 0;
