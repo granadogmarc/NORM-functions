@@ -221,22 +221,37 @@ processFile(const std::string &filename,
 
         	float lineIntegral = ComputePhantomLineIntegral(gPos1, gPos2, myPhantom, 1, 1);
         	float emptyIntegral = ComputePhantomLineIntegral(gPos1, gPos2, emptyPhantom, 1, 1);
-        	float finalIntegral = lineIntegral - emptyIntegral;
+          float finalIntegral = lineIntegral - emptyIntegral;
 
-
-        	if(!(lineIntegral>0)) std::cout<<"ERROR initial INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
-        	if(!(emptyIntegral>0)) std::cout<<"ERROR empty INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
-        	if(!(finalIntegral>0)) std::cout<<"ERROR final INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
+          if(!(lineIntegral>0)) std::cout<<"ERROR initial INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
+          if(!(emptyIntegral>0)) std::cout<<"ERROR empty INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
+          if(!(finalIntegral>0)) {
+            std::cout<<"ERROR final INTEGRAL IS NOT A VALUE above 0! Skipping event to avoid division by zero."<<std::endl;
+            continue;
+          }
 
 
 
         	//Let's computeStrides:
 
-			  int ringID1 = moduleID1+nModulesAxial*submoduleID1; //TODO generalise it for all geometric cases
-			  int ringID2 = moduleID2+nModulesAxial*submoduleID2; //TODO generalise it for all geometric cases
+              int ringID1 = moduleID1+nModulesAxial*submoduleID1; //TODO generalise it for all geometric cases
+              int ringID2 = moduleID2+nModulesAxial*submoduleID2; //TODO generalise it for all geometric cases
 
-                                          double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
-                                          double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
+                                          // Guard against zero ring counts or zero matrix entries to avoid NaNs/infs
+                                          if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
+                                            // missing ring statistics -> skip this event
+                                            continue;
+                                          }
+                                          double denom_block = ringComponentVector[ringID1]*ringComponentVector[ringID2];
+                                          double blockCorrection = std::sqrt((long double)meanRingComponentVector*(long double)meanRingComponentVector/ (long double)denom_block);
+
+                                          double geomAxCorrection = 1.0;
+                                          if (ringsComponentMatrix[ringID1][ringID2] != 0.0)
+                                            geomAxCorrection = meanRingsComponentMatrix / (ringsComponentMatrix[ringID1][ringID2]);
+                                          else {
+                                            // missing geometric axial data -> skip
+                                            continue;
+                                          }
 
               //18D removing layers from transaxial elements (use central helper)
               TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
@@ -313,9 +328,24 @@ processFile(const std::string &filename,
 
 
 
-			  double effFactorSubmodule = pow(detectorEfficyCounts.getMaxSubmoduleCount(),2)/(detectorEfficyCounts.getSubmoduleCount(submoduleID1)*detectorEfficyCounts.getSubmoduleCount(submoduleID2));
-			  double effFactorCrystal = pow(detectorEfficyCounts.getMaxCrystalCount(),2)/(detectorEfficyCounts.getCrystalCount(crystalID1)*detectorEfficyCounts.getCrystalCount(crystalID2));
-			  double effFactorLayer = pow(detectorEfficyCounts.getMaxLayerCount(),2)/(detectorEfficyCounts.getLayerCount(layerID1)*detectorEfficyCounts.getLayerCount(layerID2));
+              // Protect detector efficiency denominators
+              double sub1 = detectorEfficyCounts.getSubmoduleCount(submoduleID1);
+              double sub2 = detectorEfficyCounts.getSubmoduleCount(submoduleID2);
+              double effFactorSubmodule = 1.0;
+              if (sub1 > 0.0 && sub2 > 0.0)
+                effFactorSubmodule = pow(detectorEfficyCounts.getMaxSubmoduleCount(),2)/(sub1*sub2);
+
+              double cry1 = detectorEfficyCounts.getCrystalCount(crystalID1);
+              double cry2 = detectorEfficyCounts.getCrystalCount(crystalID2);
+              double effFactorCrystal = 1.0;
+              if (cry1 > 0.0 && cry2 > 0.0)
+                effFactorCrystal = pow(detectorEfficyCounts.getMaxCrystalCount(),2)/(cry1*cry2);
+
+              double lay1 = detectorEfficyCounts.getLayerCount(layerID1);
+              double lay2 = detectorEfficyCounts.getLayerCount(layerID2);
+              double effFactorLayer = 1.0;
+              if (lay1 > 0.0 && lay2 > 0.0)
+                effFactorLayer = pow(detectorEfficyCounts.getMaxLayerCount(),2)/(lay1*lay2);
 
 			  double effNormFactor = effFactorSubmodule*effFactorCrystal*effFactorLayer;
 
@@ -1497,21 +1527,24 @@ TVector3 convertToPosition(double x0, double y0, double z0,
 
 double meanVector(const std::vector<double>& v)
 {
-    if (v.empty()) return 0.0;
-    double sum = std::accumulate(v.begin(), v.end(), 0.0);
-    return sum / v.size();
+  if (v.empty()) return 0.0;
+  double sum = 0.0;
+  size_t count = 0;
+  for (double x : v) {
+    if (std::isfinite(x)) { sum += x; ++count; }
+  }
+  return count ? (sum / double(count)) : 0.0;
 }
 double meanMatrix(const std::vector<std::vector<double>>& M)
 {
-    double sum = 0.0;
-    size_t count = 0;
-
-    for (const auto& row : M) {
-        sum += std::accumulate(row.begin(), row.end(), 0.0);
-        count += row.size();
+  double sum = 0.0;
+  size_t count = 0;
+  for (const auto& row : M) {
+    for (double x : row) {
+      if (std::isfinite(x)) { sum += x; ++count; }
     }
-
-    return count ? sum / count : 0.0;
+  }
+  return count ? sum / double(count) : 0.0;
 }
 
 
