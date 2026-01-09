@@ -106,8 +106,8 @@ processFile(const std::string &filename,
     bool first_entry = true;
 
 
-	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers/2);
-	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers*2;
+	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
+	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
 
 
     int maxID =   nRsectorsAngPos * nRsectorsAxial *
@@ -320,8 +320,8 @@ processFile(const std::string &filename,
         int radialID = std::min(delta, totalTransaxial - delta)-1;
 
 			  // Safety: ensure radialID stays within bounds
-			  // (expected size is totalTransaxial/2)
-			  if (radialID < 0 || radialID >= totalTransaxial/2) {
+			  // (expected size is maxRadialID = totalTransaxial/2)
+			  if (radialID < 0 || radialID >= maxRadialID) {
 			      std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
 
 			  }
@@ -479,8 +479,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	int maxSymID = maxCastorID*maxCastorID/(nRsectorsAngPos * nRsectorsAxial);
 	int maxRingID	= nModulesAxial*nSubmodulesAxial*nCrystalsAxial;
 
-	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers/2);
-	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers;
+	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
+	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
 
 	std::cout<<"maxRadial ID = "<<maxRadialID<<" maxTrAID = "<<maxTrAID<<std::endl;
 
