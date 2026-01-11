@@ -4,6 +4,7 @@
 #include <numeric>
 #include <iostream>
 #include <glob.h>
+#include <omp.h>
 
 
 // Helper: compute transaxial strides (keeps consistent packing between loops)
@@ -106,8 +107,8 @@ processFile(const std::string &filename,
     bool first_entry = true;
 
 
-	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers/2);
-	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers*2;
+	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
+	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
 
 
     int maxID =   nRsectorsAngPos * nRsectorsAxial *
@@ -143,9 +144,13 @@ processFile(const std::string &filename,
 
 
 
-        if (castorID1 > maxID) std::cout << "Error ID1 is too big ! It is: "<<castorID1<<" with: "<<layerID1<<", "<<crystalID1<<", "<< submoduleID1<<", "<<moduleID1<<", "<< rsectorID1<<std::endl;
-        if (castorID2 > maxID) std::cout << "Error ID2 is too big ! It is: "<<castorID2<<" with: "<<layerID2<<", "<<crystalID2<<", "<< submoduleID2<<", "<<moduleID2<<", "<< rsectorID2<<std::endl;
-
+        if (castorID1 > maxID) {std::cout << "Error ID1 is too big ! It is: "<<castorID1<<
+        " with: "<<layerID1<<", "<<crystalID1<<", "<< submoduleID1<<", "<<moduleID1<<", "<< rsectorID1<<std::endl;
+          std::cout << "MaxID is: "<<maxID<<std::endl;
+      }
+        if (castorID2 > maxID){ std::cout << "Error ID2 is too big ! It is: "<<castorID2<<
+        " with: "<<layerID2<<", "<<crystalID2<<", "<< submoduleID2<<", "<<moduleID2<<", "<< rsectorID2<<std::endl;
+          std::cout << "MaxID is: "<<maxID<<std::endl;}
 
         if (castorID1 < castorID2) {
             std::swap(castorID1, castorID2);
@@ -320,8 +325,8 @@ processFile(const std::string &filename,
         int radialID = std::min(delta, totalTransaxial - delta)-1;
 
 			  // Safety: ensure radialID stays within bounds
-			  // (expected size is totalTransaxial/2)
-			  if (radialID < 0 || radialID >= totalTransaxial/2) {
+			  // (expected size is maxRadialID = totalTransaxial/2)
+			  if (radialID < 0 || radialID >= maxRadialID) {
 			      std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
 
 			  }
@@ -397,17 +402,15 @@ std::vector<DetectorIndices> buildCastorIDLUT(
 std::cout<<"Max castorID is "<<maxCastorID<<std::endl;
     std::vector<DetectorIndices> lut(maxCastorID);
 
-    // Fill LUT
-    uint32_t castorID;
-
-
+    // Fill LUT (parallelised - each iteration writes to a unique castorID index)
+    #pragma omp parallel for collapse(4) schedule(static)
     for (uint32_t layerID = 0; layerID < nLayers; ++layerID) {
       for (uint32_t crystalID = 0; crystalID < nCrystalsTransaxial*nCrystalsAxial; ++crystalID) {
         for (uint32_t submoduleID = 0; submoduleID < nSubmodulesTransaxial*nSubmodulesAxial; ++submoduleID) {
           for (uint32_t moduleID = 0; moduleID < nModulesTransaxial*nModulesAxial; ++moduleID) {
             for (uint32_t rsectorID = 0; rsectorID < nRsectorsAngPos*nRsectorsAxial; ++rsectorID) {
 
-                castorID = ConvertIDcylindrical(
+                uint32_t castorID = ConvertIDcylindrical(
                     nRsectorsAngPos, nRsectorsAxial,
                     invertDetOrder, rsectorIdOrder,
                     nModulesTransaxial, nModulesAxial,
@@ -428,7 +431,7 @@ std::cout<<"Max castorID is "<<maxCastorID<<std::endl;
        	}
    	  }
     }
-    std::cout<<"LUT for castorIDs has been written with max castorID = "<<castorID<<std::endl;
+    std::cout<<"LUT for castorIDs has been written with max castorID = "<<maxCastorID<<std::endl;
     return lut;
 }
 
@@ -479,8 +482,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	int maxSymID = maxCastorID*maxCastorID/(nRsectorsAngPos * nRsectorsAxial);
 	int maxRingID	= nModulesAxial*nSubmodulesAxial*nCrystalsAxial;
 
-	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers/2);
-	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial*nLayers;
+	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
+	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
 
 	std::cout<<"maxRadial ID = "<<maxRadialID<<" maxTrAID = "<<maxTrAID<<std::endl;
 
@@ -622,9 +625,10 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   // 1) blockCorrection and geomAxCorrection: global means over all valid ring pairs
   long double sb_total = 0.0L; uint64_t cb_total = 0;
   long double sg_total = 0.0L; uint64_t cg_total = 0;
+  #pragma omp parallel for collapse(2) reduction(+:sb_total,sg_total,cb_total,cg_total)
   for (int r1 = 0; r1 < maxRingID; ++r1) {
-    double rc1 = ringComponentVector[r1];
     for (int r2 = 0; r2 < maxRingID; ++r2) {
+      double rc1 = ringComponentVector[r1];
       double rc2 = ringComponentVector[r2];
       if (rc1 > 0.0 && rc2 > 0.0) {
         long double bc = std::sqrt((long double)meanRingComponentVector*(long double)meanRingComponentVector/((long double)rc1*(long double)rc2));
@@ -644,6 +648,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   size_t nRad = radialComponentVector.size();
   std::vector<double> norm_transaxial(nRad, 1.0);
   long double s_t = 0.0L; uint64_t c_t = 0;
+  #pragma omp parallel for reduction(+:s_t,c_t)
   for (size_t r = 0; r < nRad; ++r) {
     double rv = radialComponentVector[r];
     if (rv != 0.0) {
@@ -652,6 +657,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
     }
   }
   long double mean_t = (c_t ? s_t / c_t : 1.0L);
+  #pragma omp parallel for
   for (size_t r = 0; r < nRad; ++r) {
     double rv = radialComponentVector[r];
     if (rv != 0.0)
@@ -662,6 +668,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
   // 3) interference: compute a single global mean over all (radial,trA) valid entries
   long double si_total = 0.0L; uint64_t ci_total = 0;
+  #pragma omp parallel for reduction(+:si_total,ci_total)
   for (size_t r = 0; r < nRad; ++r) {
     double ntr = norm_transaxial[r];
     for (size_t t = 0; t < blockTrAComponentMatrix[r].size(); ++t) {
