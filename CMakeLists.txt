@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --------------------------------------------------
+# OpenMP
+# --------------------------------------------------
+find_package(OpenMP REQUIRED)
+
+# --------------------------------------------------
 # ROOT
 # --------------------------------------------------
 find_package(ROOT REQUIRED COMPONENTS
@@ -41,4 +46,5 @@ target_link_libraries(own-normFactors
     ROOT::Graf
     ROOT::Gpad
     ROOT::Physics
+    OpenMP::OpenMP_CXX
 )

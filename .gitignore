@@ -11,6 +11,9 @@ own-normFactors
 # ROOT
 *.root
 
+#Claude readme
+NORMALISATION_NOTES.md
+
 # OS junk
 .DS_Store
 

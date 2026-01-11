@@ -71,6 +71,49 @@ if (castorID1 < castorID2) {
 ```
 All component IDs are swapped together, maintaining correspondence between CastorID and its components.
 
+## OpenMP Parallelisation
+
+The code uses OpenMP for parallel execution on multi-core systems.
+
+### Build Requirements
+```cmake
+find_package(OpenMP REQUIRED)
+target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
+```
+
+### Parallelised Sections (Phase 1 - Implemented)
+
+1. **LUT Building** (`buildCastorIDLUT`):
+   - `#pragma omp parallel for collapse(4) schedule(static)`
+   - Each iteration writes to a unique index (no contention)
+
+2. **Global Mean Reductions** (`computeNormalizationFactors`):
+   - Block/geometric axial means: `collapse(2) reduction(+:sb_total,sg_total,...)`
+   - Transaxial mean: `reduction(+:s_t,c_t)`
+   - Interference mean: `reduction(+:si_total,ci_total)`
+
+3. **Transaxial Normalisation Vector**:
+   - `#pragma omp parallel for` (independent writes to different indices)
+
+### Controlling Thread Count
+```bash
+export OMP_NUM_THREADS=4  # Use 4 threads
+./own-normFactors ...
+```
+
+### Future Parallelisation Candidates
+
+**Phase 2** (not yet implemented):
+- 9-level nested loop in `computeNormalizationFactors` (main computation)
+  - Requires buffered file I/O due to thread-safety
+  - Expected speedup: 2-3x
+
+**Phase 3** (not yet implemented):
+- TTree processing in `processFile`
+  - ROOT's TTree::GetEntry() is not thread-safe
+  - Requires buffered approach: read sequentially, process in parallel
+  - Expected speedup: 1.5-2x
+
 ## Future Considerations
 
 If constraints change:
