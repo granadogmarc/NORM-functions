@@ -3,12 +3,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdlib>
-#include <iostream>
-#include <algorithm>
 #include <random>
+#include <omp.h>
 #include "TROOT.h"
 #include "TApplication.h"
 #include "TGClient.h"
@@ -22,74 +18,112 @@
 #include "TLegend.h"
 #include "normFunctions.h"
 
-
-#include <iostream>
 #include <filesystem>
 #include <vector>
 #include <string>
-#include <map>
-#include <array>
 #include <glob.h>
 
-
-// bring in your ParseGeomFile, ConvertIDcylindrical, etc:
-#include "normFunctions.h"
+void printUsage(const char* programName) {
+    std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
+              << "PET normalization factors computation utility.\n\n"
+              << "Required arguments:\n"
+              << "  -s, --system <name>      Scanner system name. Available systems:\n"
+              << "                             CM2L_1ring_system\n"
+              << "                             16x16x2_1ring_system\n"
+              << "                             16x16x2_4rings_system\n"
+              << "                             32x16x2_4rings_system\n"
+              << "  -i, --input <pattern>    Input ROOT file path or glob pattern\n"
+              << "                             (use quotes for wildcards: 'path/*.root')\n"
+              << "  -o, --outputFile <name>  Output file name (without extension)\n\n"
+              << "Optional arguments:\n"
+              << "  -d, --outputDir <path>   Output directory (default: current directory)\n"
+              << "  -j, --threads <N>        Number of OpenMP threads to use\n"
+              << "                             (default: all available cores)\n"
+              << "  -h, --help               Show this help message and exit\n\n"
+              << "Examples:\n"
+              << "  " << programName << " -s CM2L_1ring_system -i 'data/*.root' -o norm_output\n"
+              << "  " << programName << " -s 16x16x2_4rings_system -i data.root -o out -j 4\n";
+}
 
 
 int main(int argc,char**argv) {
 
 	std::string scannerName;
-	 std::string pattern;
-	 std::string outputMatrixFileName;
-	 std::string outputDir;
+	std::string pattern;
+	std::string outputMatrixFileName;
+	std::string outputDir;
+	int numThreads = 0;  // 0 means use default (all available)
+
+	if (argc == 1) {
+		printUsage(argv[0]);
+		return 1;
+	}
 
 	for (int i = 1; i < argc; ++i) {
-	        std::string arg = argv[i];
+		std::string arg = argv[i];
 
-	        if (arg == "-s" || arg == "--system") {
-	            if (i + 1 < argc) {
-	                scannerName = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
-	        }else  if (arg == "-i" || arg == "--input") {
-	            if (i + 1 < argc) {
-	                pattern = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
-	        }else  if (arg == "-d" || arg == "--outputDir") {
-	            if (i + 1 < argc) {
-	            	outputDir = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
+		if (arg == "-h" || arg == "--help") {
+			printUsage(argv[0]);
+			return 0;
+		}
+		else if (arg == "-s" || arg == "--system") {
+			if (i + 1 < argc) {
+				scannerName = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-i" || arg == "--input") {
+			if (i + 1 < argc) {
+				pattern = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-d" || arg == "--outputDir") {
+			if (i + 1 < argc) {
+				outputDir = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-o" || arg == "--outputFile") {
+			if (i + 1 < argc) {
+				outputMatrixFileName = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-j" || arg == "--threads") {
+			if (i + 1 < argc) {
+				numThreads = std::atoi(argv[++i]);
+				if (numThreads <= 0) {
+					std::cerr << "Error: invalid thread count. Must be a positive integer.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else {
+			std::cerr << "Error: unknown argument '" << arg << "'\n\n";
+			printUsage(argv[0]);
+			return 1;
+		}
+	}
 
-	        }else  if (arg == "-o" || arg == "--outputFile") {
-	            if (i + 1 < argc) {
-	            	outputMatrixFileName = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
-	        }
-
-
-	        else {
-	        	std::cerr<<"Usage: "<<argv[0]<<"\n-i or --input path/to/file or 'path/to/pattern'\n -s or --system systemName\n -o or --output path/to/outputFile\n";
-	        	return 1;
-	        }
-
-
-	    }
-
-	if (argc==1) {
-		        	std::cerr<<"Usage: "<<argv[0]<<"\n-i or --input path/to/file or 'path/to/pattern'\n -s or --system systemName\n -o or --output path/to/outputFile\n";
-		        	return 1;
-		        }
+	// Set OpenMP thread count if specified
+	if (numThreads > 0) {
+		omp_set_num_threads(numThreads);
+		std::cout << "OpenMP: Using " << numThreads << " thread(s)\n";
+	} else {
+		std::cout << "OpenMP: Using " << omp_get_max_threads() << " thread(s) (default)\n";
+	}
 
 
 	std::cout<<"outDir = "<<outputDir<<" fileName "<<outputMatrixFileName<<std::endl;
