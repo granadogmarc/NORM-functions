@@ -566,14 +566,15 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	     << "\n";
 
 	   //We compute these values here so we can use them for the corrections for the annular source
+	   //Using geometric mean to reduce sensitivity to skewed distributions and outliers
 	   if (fn.find("solidCyl")!=std::string::npos){
-	   meanRingComponentVector = meanVector(ringComponentVector);
-	   meanRingsComponentMatrix = meanMatrix(ringsComponentMatrix);
+	   meanRingComponentVector = geometricMeanVector(ringComponentVector);
+	   meanRingsComponentMatrix = geometricMeanMatrix(ringsComponentMatrix);
 	   }
 
 	   if (fn.find("annular")!=std::string::npos){
-		   meanRadialComponentVector = meanVector(radialComponentVector);
-		   meanBlockTrAComponentMatrix = meanMatrix(blockTrAComponentMatrix);//
+		   meanRadialComponentVector = geometricMeanVector(radialComponentVector);
+		   meanBlockTrAComponentMatrix = geometricMeanMatrix(blockTrAComponentMatrix);
 	   }
 
   }
@@ -612,74 +613,6 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
-
-  // ------------------------------------------------------------------
-  // Compute per-row/ per-radial means for component-wise normalization
-  // blockCorrection: per ring1 mean over ring2
-  // geomAxCorrection: per ring1 mean over ring2
-  // transaxialGeomNormFactor: global mean over radialIDs
-  // interferenceTraFactor: per radialID mean over trAID (after transaxial normalization)
-  // ------------------------------------------------------------------
-
-  // Compute global means for normalization (global per-component normalization)
-  // 1) blockCorrection and geomAxCorrection: global means over all valid ring pairs
-  long double sb_total = 0.0L; uint64_t cb_total = 0;
-  long double sg_total = 0.0L; uint64_t cg_total = 0;
-  #pragma omp parallel for collapse(2) reduction(+:sb_total,sg_total,cb_total,cg_total)
-  for (int r1 = 0; r1 < maxRingID; ++r1) {
-    for (int r2 = 0; r2 < maxRingID; ++r2) {
-      double rc1 = ringComponentVector[r1];
-      double rc2 = ringComponentVector[r2];
-      if (rc1 > 0.0 && rc2 > 0.0) {
-        long double bc = std::sqrt((long double)meanRingComponentVector*(long double)meanRingComponentVector/((long double)rc1*(long double)rc2));
-        sb_total += bc; ++cb_total;
-      }
-      double rm = ringsComponentMatrix[r1][r2];
-      if (rm != 0.0) {
-        long double gc = (long double)meanRingsComponentMatrix / (long double)rm;
-        sg_total += gc; ++cg_total;
-      }
-    }
-  }
-  double mean_block_global = (cb_total ? double(sb_total / cb_total) : 1.0);
-  double mean_geomAx_global = (cg_total ? double(sg_total / cg_total) : 1.0);
-
-  // 2) transaxialGeomNormFactor: compute normalized transaxial factor per radialID (global-normalized vector)
-  size_t nRad = radialComponentVector.size();
-  std::vector<double> norm_transaxial(nRad, 1.0);
-  long double s_t = 0.0L; uint64_t c_t = 0;
-  #pragma omp parallel for reduction(+:s_t,c_t)
-  for (size_t r = 0; r < nRad; ++r) {
-    double rv = radialComponentVector[r];
-    if (rv != 0.0) {
-      long double t = (long double)meanRadialComponentVector / (long double)rv;
-      s_t += t; ++c_t;
-    }
-  }
-  long double mean_t = (c_t ? s_t / c_t : 1.0L);
-  #pragma omp parallel for
-  for (size_t r = 0; r < nRad; ++r) {
-    double rv = radialComponentVector[r];
-    if (rv != 0.0)
-      norm_transaxial[r] = double(((long double)meanRadialComponentVector / (long double)rv) / mean_t);
-    else
-      norm_transaxial[r] = 1.0;
-  }
-
-  // 3) interference: compute a single global mean over all (radial,trA) valid entries
-  long double si_total = 0.0L; uint64_t ci_total = 0;
-  #pragma omp parallel for reduction(+:si_total,ci_total)
-  for (size_t r = 0; r < nRad; ++r) {
-    double ntr = norm_transaxial[r];
-    for (size_t t = 0; t < blockTrAComponentMatrix[r].size(); ++t) {
-      double b = blockTrAComponentMatrix[r][t];
-      if (b != 0.0 && ntr != 0.0) {
-        long double interf = (long double)meanBlockTrAComponentMatrix / ((long double)ntr * (long double)b);
-        si_total += interf; ++ci_total;
-      }
-    }
-  }
-  double mean_interf_global = (ci_total ? double(si_total / ci_total) : 1.0);
 
   DetectorIndices d1,d2;
   int rsectorDiff = 0;
@@ -841,26 +774,24 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
+                      // Transaxial geometric normalization - computed directly from components
                       double transaxialGeomNormFactor = 1.0;
-                      if (radialID >= 0 && size_t(radialID) < norm_transaxial.size())
-                        transaxialGeomNormFactor = norm_transaxial[radialID];
+                      if (radialID >= 0 && size_t(radialID) < radialComponentVector.size() && radialComponentVector[radialID] > 0.0)
+                        transaxialGeomNormFactor = meanRadialComponentVector / radialComponentVector[radialID];
 
-                      double norm_block = (mean_block_global != 0.0) ? blockCorrection / mean_block_global : blockCorrection;
-                      double norm_geomAx = (mean_geomAx_global != 0.0) ? geomAxCorrection / mean_geomAx_global : geomAxCorrection;
-
-                      double interferenceTraFactor = 0.0;
-                      if (transaxialGeomNormFactor != 0.0 && blockTrAComponentMatrix[radialID][trAID] != 0.0) {
+                      // Interference factor - computed directly from components
+                      double interferenceTraFactor = 1.0;
+                      if (transaxialGeomNormFactor != 0.0 && blockTrAComponentMatrix[radialID][trAID] > 0.0) {
                         interferenceTraFactor = meanBlockTrAComponentMatrix / (transaxialGeomNormFactor * blockTrAComponentMatrix[radialID][trAID]);
-                        if (mean_interf_global != 0.0)
-                          interferenceTraFactor /= mean_interf_global;
                       }
 
-                      double CBasedNF = effNormFactor * norm_block * norm_geomAx * transaxialGeomNormFactor * interferenceTraFactor;
+                      // Final normalization: all components use geometric mean normalization directly
+                      double CBasedNF = effNormFactor * blockCorrection * geomAxCorrection * transaxialGeomNormFactor * interferenceTraFactor;
 
                       // Increment written-LOR counter and write normalized entries
                       LORinFOV++;
-                      writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, castorID2, castorID1, effNormFactor*norm_block*norm_block*norm_geomAx*transaxialGeomNormFactor); // disabled
-                      writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*norm_block*norm_geomAx*transaxialGeomNormFactor);
+                      writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, castorID2, castorID1, effNormFactor*blockCorrection*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
+                      writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
                       writeNormEntryNormMatrixFile(normFile_CB, castorID2, castorID1, CBasedNF);
 
 
@@ -1552,6 +1483,38 @@ double meanMatrix(const std::vector<std::vector<double>>& M)
     }
   }
   return count ? sum / double(count) : 0.0;
+}
+
+// Geometric mean for vectors - better for multiplicative normalization factors
+// Reduces sensitivity to outliers and skewed distributions
+double geometricMeanVector(const std::vector<double>& v)
+{
+  if (v.empty()) return 1.0;
+  long double logSum = 0.0L;
+  size_t count = 0;
+  for (double x : v) {
+    if (std::isfinite(x) && x > 0.0) {
+      logSum += std::log(static_cast<long double>(x));
+      ++count;
+    }
+  }
+  return count ? static_cast<double>(std::exp(logSum / static_cast<long double>(count))) : 1.0;
+}
+
+// Geometric mean for matrices - better for multiplicative normalization factors
+double geometricMeanMatrix(const std::vector<std::vector<double>>& M)
+{
+  long double logSum = 0.0L;
+  size_t count = 0;
+  for (const auto& row : M) {
+    for (double x : row) {
+      if (std::isfinite(x) && x > 0.0) {
+        logSum += std::log(static_cast<long double>(x));
+        ++count;
+      }
+    }
+  }
+  return count ? static_cast<double>(std::exp(logSum / static_cast<long double>(count))) : 1.0;
 }
 
 
