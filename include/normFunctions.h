@@ -632,6 +632,8 @@ void writeCdhHeaderNormMatrixFile(const std::string& outputMatrixFileName,const 
 
 double meanVector(const std::vector<double>& v);
 double meanMatrix(const std::vector<std::vector<double>>& M);
+double geometricMeanVector(const std::vector<double>& v);
+double geometricMeanMatrix(const std::vector<std::vector<double>>& M);
 
 double scaledMeanMatrix(const std::vector<std::vector<double>>& mat,const std::vector<double>& weights);
 inline std::ofstream openCSV(const std::string& filename);
