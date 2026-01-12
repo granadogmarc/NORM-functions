@@ -96,10 +96,19 @@ target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
    - `#pragma omp parallel for` (independent writes to different indices)
 
 ### Controlling Thread Count
+
+**Option 1: Command-line argument (recommended)**
+```bash
+./own-normFactors -j 4 ...  # Use 4 threads
+```
+
+**Option 2: Environment variable**
 ```bash
 export OMP_NUM_THREADS=4  # Use 4 threads
 ./own-normFactors ...
 ```
+
+The `-j`/`--threads` argument takes precedence over the environment variable.
 
 ### Future Parallelisation Candidates
 
