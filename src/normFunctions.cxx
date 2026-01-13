@@ -467,11 +467,11 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 	double PI = 3.14159265358979323846;
 
-	int maxCastorID = nRsectorsAngPos * nRsectorsAxial *
+	uint64_t maxCastorID = uint64_t(nRsectorsAngPos) * nRsectorsAxial *
 	                           nModulesTransaxial * nModulesAxial *
 	                           nSubmodulesTransaxial * nSubmodulesAxial *
 	                           nCrystalsTransaxial * nCrystalsAxial *
-							   nLayers;
+	                           nLayers;
 
 	int transaxialElements = 0;
 	if (nModulesTransaxial>1) transaxialElements +=1;
@@ -622,65 +622,78 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
   //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  //////////////////////////////////////////////////////////////////
-  ////////////////////////////////////////////////////////////////
+  // 2-nested loop over CastorID pairs (flattened from 10-nested loop)
+  // This allows easier OpenMP parallelization
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+  std::cout << "Using flattened CastorID loop with maxCastorID = " << maxCastorID << std::endl;
 
+  // Buffer size for batched writes (reduces critical section contention)
+  constexpr size_t BUFFER_FLUSH_SIZE = 10000;
 
-  for (uint32_t layerID1 = 0; layerID1 < nLayers; ++layerID1) {
-	  for (uint32_t layerID2 = 0; layerID2 < nLayers; ++layerID2) {
-		  for (uint32_t crystalID1 = 0; crystalID1 < nCrystalsTransaxial*nCrystalsAxial; ++crystalID1) {
-			  for (uint32_t crystalID2 = 0; crystalID2 < nCrystalsTransaxial*nCrystalsAxial; ++crystalID2){
-				  for (uint32_t submoduleID1 = 0; submoduleID1 < nSubmodulesTransaxial*nSubmodulesAxial; ++submoduleID1) {
-					  for (uint32_t submoduleID2 = 0; submoduleID2 < nSubmodulesTransaxial*nSubmodulesAxial; ++submoduleID2) {
-						  for (uint32_t moduleID1 = 0; moduleID1 < nModulesTransaxial*nModulesAxial; ++moduleID1) {
-							  for (uint32_t moduleID2 = 0; moduleID2 < nModulesTransaxial*nModulesAxial; ++moduleID2) {
-								  for (uint32_t rsectorID1 = 0; rsectorID1 < nRsectorsAngPos*nRsectorsAxial; ++rsectorID1) {
-									  for (uint32_t rsectorID2 = 0; rsectorID2 < nRsectorsAngPos*nRsectorsAxial; ++rsectorID2) {
+  // Loop over all unique pairs where castorID1 > castorID2
+  // OpenMP parallelization with thread-local buffers for efficient I/O
+  #pragma omp parallel
+  {
+    // Thread-local buffer and counter
+    std::vector<NormEntry> localBuffer;
+    localBuffer.reserve(BUFFER_FLUSH_SIZE);
+    int64_t localLORcount = 0;
 
-                        //Applying an "R = 300 mm" filter
+    #pragma omp for schedule(dynamic)
+    for (uint64_t castorID2 = 0; castorID2 < maxCastorID; ++castorID2) {
+    // Get component IDs for detector 2
+    DetectorIndices det2 = ReverseCastorID(castorID2,
+        nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
+        nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
+        nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
+        nLayersRptTransaxial, nLayersRptAxial);
 
-                        // Compute transaxial component of rsectorID (handles axial repeats)
-                        int rsectorTrs1, rsectorTrs2;
-                        if (rsectorIdOrder == 0) {
-                          rsectorTrs1 = rsectorID1 % nRsectorsAngPos;
-                          rsectorTrs2 = rsectorID2 % nRsectorsAngPos;
-                        } else {
-                          // axial-first ordering
-                          rsectorTrs1 = rsectorID1 / nRsectorsAxial;
-                          rsectorTrs2 = rsectorID2 / nRsectorsAxial;
-                        }
+    uint32_t rsectorID2   = det2.rsectorID;
+    uint32_t moduleID2    = det2.moduleID;
+    uint32_t submoduleID2 = det2.submoduleID;
+    uint32_t crystalID2   = det2.crystalID;
+    uint32_t layerID2     = det2.layerID;
 
-                        // Circular difference on transaxial sectors (wrap-around aware)
-                        int absDiff = std::abs(rsectorTrs1 - rsectorTrs2);
-                        int circDiff = std::min(absDiff, int(nRsectorsAngPos) - absDiff);
+    for (uint64_t castorID1 = castorID2 + 1; castorID1 < maxCastorID; ++castorID1) {
+      // Get component IDs for detector 1
+      DetectorIndices det1 = ReverseCastorID(castorID1,
+          nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
+          nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
+          nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
+          nLayersRptTransaxial, nLayersRptAxial);
 
-                        if (circDiff < 4)
-                          continue;
-                        if (circDiff == 4) {
-                          if ((nSubmodulesTransaxial != 0) && (abs(submoduleID1 - submoduleID2) < 13))
-                            continue;
-                          else if ((nCrystalsTransaxial != 0) && (abs(crystalID1 - crystalID2) < 13))
-                            continue;
-                        }
+      uint32_t rsectorID1   = det1.rsectorID;
+      uint32_t moduleID1    = det1.moduleID;
+      uint32_t submoduleID1 = det1.submoduleID;
+      uint32_t crystalID1   = det1.crystalID;
+      uint32_t layerID1     = det1.layerID;
 
-                        //Computing the castor ID's
+      // Compute transaxial component of rsectorID (handles axial repeats)
+      int rsectorTrs1, rsectorTrs2;
+      if (rsectorIdOrder == 0) {
+        rsectorTrs1 = rsectorID1 % nRsectorsAngPos;
+        rsectorTrs2 = rsectorID2 % nRsectorsAngPos;
+      } else {
+        // axial-first ordering
+        rsectorTrs1 = rsectorID1 / nRsectorsAxial;
+        rsectorTrs2 = rsectorID2 / nRsectorsAxial;
+      }
 
-                        int castorID1 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
-                          nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
-                          nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
-                          nLayersRptTransaxial, nLayersRptAxial,
-                          layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);
+      // Circular difference on transaxial sectors (wrap-around aware)
+      int absDiff = std::abs(rsectorTrs1 - rsectorTrs2);
+      int circDiff = std::min(absDiff, int(nRsectorsAngPos) - absDiff);
 
-                        int castorID2 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
-                          nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
-                          nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
-                          nLayersRptTransaxial, nLayersRptAxial,
-                          layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);
+      if (circDiff < 4)
+        continue;
+      if (circDiff == 4) {
+        if ((nSubmodulesTransaxial != 0) && (abs(int(submoduleID1) - int(submoduleID2)) < 13))
+          continue;
+        else if ((nCrystalsTransaxial != 0) && (abs(int(crystalID1) - int(crystalID2)) < 13))
+          continue;
+      }
 
-                        // Only process unordered pairs once (castorID1 > castorID2)
-                        if (castorID1 <= castorID2)
-                          continue;
+      // castorID1 > castorID2 is guaranteed by loop structure
 
                         // Count this unique LOR only when we actually write it
                         // (increment moved down to where entries are written)
@@ -775,12 +788,12 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
                       // Transaxial geometric normalization - computed directly from components
-                      double transaxialGeomNormFactor = 1.0;
+                      double transaxialGeomNormFactor = 0.0;
                       if (radialID >= 0 && size_t(radialID) < radialComponentVector.size() && radialComponentVector[radialID] > 0.0)
                         transaxialGeomNormFactor = meanRadialComponentVector / radialComponentVector[radialID];
 
                       // Interference factor - computed directly from components
-                      double interferenceTraFactor = 1.0;
+                      double interferenceTraFactor = 0.0;
                       if (transaxialGeomNormFactor != 0.0 && blockTrAComponentMatrix[radialID][trAID] > 0.0) {
                         interferenceTraFactor = meanBlockTrAComponentMatrix / (transaxialGeomNormFactor * blockTrAComponentMatrix[radialID][trAID]);
                       }
@@ -788,24 +801,47 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
                       // Final normalization: all components use geometric mean normalization directly
                       double CBasedNF = effNormFactor * blockCorrection * geomAxCorrection * transaxialGeomNormFactor * interferenceTraFactor;
 
-                      // Increment written-LOR counter and write normalized entries
-                      LORinFOV++;
-                      writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, castorID2, castorID1, effNormFactor*blockCorrection*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
-                      writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, castorID2, castorID1, effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor);
-                      writeNormEntryNormMatrixFile(normFile_CB, castorID2, castorID1, CBasedNF);
+                      // Buffer the entry instead of writing immediately
+                      localLORcount++;
+                      localBuffer.push_back({
+                        castorID1,
+                        castorID2,
+                        static_cast<float>(CBasedNF),
+                        static_cast<float>(effNormFactor*blockCorrection*blockCorrection*geomAxCorrection*transaxialGeomNormFactor),
+                        static_cast<float>(effNormFactor*blockCorrection*geomAxCorrection*transaxialGeomNormFactor)
+                      });
 
+                      // Flush buffer when full (reduces critical section contention)
+                      if (localBuffer.size() >= BUFFER_FLUSH_SIZE) {
+                        #pragma omp critical
+                        {
+                          for (const auto& e : localBuffer) {
+                            writeNormEntryNormMatrixFile(normFile_CB, e.castorID2, e.castorID1, e.normCB);
+                            writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, e.castorID2, e.castorID1, e.normCBsqrBfnI);
+                            writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, e.castorID2, e.castorID1, e.normEffBfGAfGTrAf);
+                          }
+                        }
+                        localBuffer.clear();
+                      }
 
+    } // end inner loop (castorID1)
+    } // end outer loop (castorID2)
 
-									  }
-								  }
-							  }
-						  }
-					  }
-				  }
-			  }
-		  }
-	  }
-  }
+    // Flush remaining entries in buffer
+    #pragma omp critical
+    {
+      for (const auto& e : localBuffer) {
+        writeNormEntryNormMatrixFile(normFile_CB, e.castorID2, e.castorID1, e.normCB);
+        writeNormEntryNormMatrixFile(normFile_CBsqrBfnI, e.castorID2, e.castorID1, e.normCBsqrBfnI);
+        writeNormEntryNormMatrixFile(normFile_effBfGAfGTrAf, e.castorID2, e.castorID1, e.normEffBfGAfGTrAf);
+      }
+    }
+
+    // Accumulate local LOR count to global counter
+    #pragma omp atomic
+    LORinFOV += localLORcount;
+
+  } // end omp parallel
 
 
   //std::cout<<"Average number of coincidences per LOR is "<<Navg<<" with usedLOR "<<usedLOR<<" while LOR in the FOV are "<< LORinFOV <<std::endl;
@@ -1024,7 +1060,118 @@ uint32_t ConvertIDcylindrical(uint32_t  nRsectorsAngPos,
   return castorID;
 }
 
+//---------------------------------------------------------------------
+// ReverseCastorID: Inverse of ConvertIDcylindrical
+//---------------------------------------------------------------------
+// Given a castorID, compute the original component IDs
+DetectorIndices ReverseCastorID(
+    uint32_t castorID,
+    uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    bool     invertDetOrder,
+    int      rsectorIdOrder,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t  nLayers,
+    uint32_t *nCrystalPerLayer,
+    uint32_t nLayersRptTransaxial,
+    uint32_t nLayersRptAxial)
+{
+    DetectorIndices result;
 
+    // Compute strides (same as forward function)
+    uint32_t nTrsCrystalsPerSubmodule = nCrystalsTransaxial;
+    uint32_t nTrsCrystalsPerModule    = nTrsCrystalsPerSubmodule * nSubmodulesTransaxial;
+    uint32_t nTrsCrystalsPerRsector   = nTrsCrystalsPerModule * nModulesTransaxial;
+    uint32_t nCrystalsPerRing         = nTrsCrystalsPerRsector * nRsectorsAngPos;
+
+    // Determine layer and subtract layer offset
+    uint32_t layerID = 0;
+    uint32_t remainingID = castorID;
+
+    if (nLayers > 1) {
+        // Find which layer this castorID belongs to
+        uint32_t layerOffset = 0;
+        for (uint8_t l = 0; l < nLayers; ++l) {
+            uint32_t crystalsInLayer = nCrystalPerLayer[l];
+            if (l > 0) {
+                layerOffset = nCrystalPerLayer[l-1] * l;
+            }
+            uint32_t nextLayerOffset = nCrystalPerLayer[l] * (l + 1);
+
+            if (castorID < nextLayerOffset || l == nLayers - 1) {
+                layerID = l;
+                remainingID = castorID - layerOffset;
+                break;
+            }
+        }
+    }
+
+    // Extract ringID and transaxial components
+    uint32_t ringID       = remainingID / nCrystalsPerRing;
+    uint32_t remainder    = remainingID % nCrystalsPerRing;
+
+    uint32_t rsectorTrsID = remainder / nTrsCrystalsPerRsector;
+    remainder             = remainder % nTrsCrystalsPerRsector;
+
+    uint32_t moduleIDTrs  = remainder / nTrsCrystalsPerModule;
+    remainder             = remainder % nTrsCrystalsPerModule;
+
+    uint32_t submoduleIDTrs = remainder / nTrsCrystalsPerSubmodule;
+    uint32_t crystalIDTrs   = remainder % nTrsCrystalsPerSubmodule;
+
+    // Reverse invertDetOrder if it was applied
+    if (invertDetOrder) {
+        moduleIDTrs    = nModulesTransaxial - 1 - moduleIDTrs;
+        submoduleIDTrs = nSubmodulesTransaxial - 1 - submoduleIDTrs;
+        crystalIDTrs   = nCrystalsTransaxial - 1 - crystalIDTrs;
+    }
+
+    // Extract axial components from ringID
+    // ringID = rsectorAxlID * (nModulesAxial * nSubmodulesAxial * nCrystalsAxial)
+    //        + moduleIDAxl * (nSubmodulesAxial * nCrystalsAxial)
+    //        + submoduleIDAxl * nCrystalsAxial
+    //        + crystalIDAxl
+    uint32_t nAxialPerSubmodule = nCrystalsAxial;
+    uint32_t nAxialPerModule    = nAxialPerSubmodule * nSubmodulesAxial;
+    uint32_t nAxialPerRsector   = nAxialPerModule * nModulesAxial;
+
+    uint32_t rsectorAxlID   = ringID / nAxialPerRsector;
+    uint32_t ringRemainder  = ringID % nAxialPerRsector;
+
+    uint32_t moduleIDAxl    = ringRemainder / nAxialPerModule;
+    ringRemainder           = ringRemainder % nAxialPerModule;
+
+    uint32_t submoduleIDAxl = ringRemainder / nAxialPerSubmodule;
+    uint32_t crystalIDAxl   = ringRemainder % nAxialPerSubmodule;
+
+    // Recombine transaxial and axial into original combined IDs
+    uint32_t moduleID    = moduleIDAxl * nModulesTransaxial + moduleIDTrs;
+    uint32_t submoduleID = submoduleIDAxl * nSubmodulesTransaxial + submoduleIDTrs;
+    uint32_t crystalID   = crystalIDAxl * nCrystalsTransaxial + crystalIDTrs;
+
+    // Recombine rsectorID from axial and transaxial parts
+    uint32_t rsectorID;
+    if (rsectorIdOrder == 0) {
+        // transaxial-first: rsectorID = rsectorAxlID * nRsectorsAngPos + rsectorTrsID
+        rsectorID = rsectorAxlID * nRsectorsAngPos + rsectorTrsID;
+    } else {
+        // axial-first: rsectorID = rsectorTrsID * nRsectorsAxial + rsectorAxlID
+        rsectorID = rsectorTrsID * nRsectorsAxial + rsectorAxlID;
+    }
+
+    result.rsectorID   = rsectorID;
+    result.moduleID    = moduleID;
+    result.submoduleID = submoduleID;
+    result.crystalID   = crystalID;
+    result.layerID     = layerID;
+
+    return result;
+}
 
 
 

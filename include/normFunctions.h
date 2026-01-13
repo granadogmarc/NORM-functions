@@ -125,7 +125,32 @@ struct DetectorIndices {
     uint32_t layerID;
 };
 
+// Structure for buffering normalization entries (for parallel I/O)
+struct NormEntry {
+    uint64_t castorID1;
+    uint64_t castorID2;
+    float normCB;           // Component-based normalization factor
+    float normCBsqrBfnI;    // CB with squared block factor, no interference
+    float normEffBfGAfGTrAf; // Efficiency * block * geomAx * transaxial
+};
 
+// Reverse CastorID to component IDs (inverse of ConvertIDcylindrical)
+DetectorIndices ReverseCastorID(
+    uint32_t castorID,
+    uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    bool     invertDetOrder,
+    int      rsectorIdOrder,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t  nLayers,
+    uint32_t *nCrystalPerLayer,
+    uint32_t nLayersRptTransaxial,
+    uint32_t nLayersRptAxial);
 
 
 std::vector<DetectorIndices> buildCastorIDLUT(
