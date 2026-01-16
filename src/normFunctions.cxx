@@ -41,6 +41,7 @@ processFile(const std::string &filename,
 			double						meanRingComponentVector,
       vectorRingComponent		&ringComponentVector,
 			DetectorCounters &detectorEfficyCounts,
+      FanSumCounter    &fanSumCounter,  // 3D fan-sum for intrinsic efficiency
       Long64_t &usedLOR,
       Long64_t &totalEvents,
             uint32_t nRsectorsAngPos,
@@ -191,6 +192,35 @@ processFile(const std::string &filename,
             detectorEfficyCounts.addLayerCount(layerID1);
             detectorEfficyCounts.addLayerCount(layerID2);
 
+            //=================================================================
+            // 3D Fan-Sum: Accumulate counts per crystal (ring, transaxial)
+            // Ring = moduleID + nModulesAxial * submoduleID (axial position)
+            // Transaxial = rsector * stride + module_tr * stride + submod_tr * stride + crystal_tr
+            // (excluding layers as per user request)
+            //=================================================================
+            int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
+            int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
+
+            // Compute transaxial position (excluding layers)
+            int strideCrystalTr = 1;
+            int strideSubmoduleTr = nCrystalsTransaxial;
+            int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
+            int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
+
+            int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
+                              + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
+                              + (moduleID1 % nModulesTransaxial) * strideModuleTr
+                              + rsectorID1 * strideRsectorTr;
+
+            int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
+                              + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
+                              + (moduleID2 % nModulesTransaxial) * strideModuleTr
+                              + rsectorID2 * strideRsectorTr;
+
+            // Add counts to both crystals involved in this coincidence
+            fanSumCounter.addCount(ringID1, transaxialID1);
+            fanSumCounter.addCount(ringID2, transaxialID2);
+
             //creating the axial block component:
             if(moduleID1 == moduleID2){
             	if(submoduleID1 == submoduleID2){//TODO this should be generalised to identify the element with axial component
@@ -333,26 +363,29 @@ processFile(const std::string &filename,
 
 
 
-              // Protect detector efficiency denominators
-              double sub1 = detectorEfficyCounts.getSubmoduleCount(submoduleID1);
-              double sub2 = detectorEfficyCounts.getSubmoduleCount(submoduleID2);
-              double effFactorSubmodule = 1.0;
-              if (sub1 > 0.0 && sub2 > 0.0)
-                effFactorSubmodule = pow(detectorEfficyCounts.getMaxSubmoduleCount(),2)/(sub1*sub2);
+              //=================================================================
+              // 3D Fan-Sum Efficiency (Pepin et al. 2011, Equation 4)
+              // Uses fan-sum counter populated during cylinder scan
+              //=================================================================
+              // Compute transaxial positions for fan-sum lookup (excluding layers)
+              int strideCrystalTr = 1;
+              int strideSubmoduleTr = nCrystalsTransaxial;
+              int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
+              int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
 
-              double cry1 = detectorEfficyCounts.getCrystalCount(crystalID1);
-              double cry2 = detectorEfficyCounts.getCrystalCount(crystalID2);
-              double effFactorCrystal = 1.0;
-              if (cry1 > 0.0 && cry2 > 0.0)
-                effFactorCrystal = pow(detectorEfficyCounts.getMaxCrystalCount(),2)/(cry1*cry2);
+              int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
+                                + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
+                                + (moduleID1 % nModulesTransaxial) * strideModuleTr
+                                + rsectorID1 * strideRsectorTr;
 
-              double lay1 = detectorEfficyCounts.getLayerCount(layerID1);
-              double lay2 = detectorEfficyCounts.getLayerCount(layerID2);
-              double effFactorLayer = 1.0;
-              if (lay1 > 0.0 && lay2 > 0.0)
-                effFactorLayer = pow(detectorEfficyCounts.getMaxLayerCount(),2)/(lay1*lay2);
+              int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
+                                + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
+                                + (moduleID2 % nModulesTransaxial) * strideModuleTr
+                                + rsectorID2 * strideRsectorTr;
 
-			  double effNormFactor = effFactorSubmodule*effFactorCrystal*effFactorLayer;
+              // Get fan-sum based efficiency factor
+              double effNormFactor = fanSumCounter.getEfficiencyFactor(
+                  ringID1, transaxialID1, ringID2, transaxialID2);
 
 
               radialComponentVector[radialID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
@@ -494,6 +527,13 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 	DetectorCounters detectorEfficyCounts(nSubmodulesTransaxial*nSubmodulesAxial, nCrystalsTransaxial*nCrystalsAxial,nLayers);
 
+	// 3D Fan-Sum Counter for intrinsic detector efficiency (Pepin et al. 2011)
+	// Ring dimension: nModulesAxial * nSubmodulesAxial (axial positions)
+	// Transaxial dimension: nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial
+	uint32_t nFanSumRings = nModulesAxial * nSubmodulesAxial;
+	uint32_t nFanSumTransaxial = nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
+	FanSumCounter fanSumCounter(nFanSumRings, nFanSumTransaxial);
+
 
 
 
@@ -533,6 +573,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         meanRadialComponentVector,
         ringComponentVector,
         detectorEfficyCounts,
+        fanSumCounter,  // 3D fan-sum for intrinsic efficiency
         usedLOR,
         totalEvents,
               nRsectorsAngPos,
@@ -570,6 +611,13 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	   if (fn.find("solidCyl")!=std::string::npos){
 	   meanRingComponentVector = geometricMeanVector(ringComponentVector);
 	   meanRingsComponentMatrix = geometricMeanMatrix(ringsComponentMatrix);
+
+	   // Diagnostic output for 3D fan-sum counter
+	   std::cout << "=== 3D Fan-Sum Counter Statistics ===" << std::endl;
+	   std::cout << "  Min fan count: " << fanSumCounter.getMinFanCount() << std::endl;
+	   std::cout << "  Max fan count: " << fanSumCounter.getMaxFanCount() << std::endl;
+	   std::cout << "  Global average fan: " << fanSumCounter.getGlobalAverageFan() << std::endl;
+	   std::cout << "  Poissonian error (min): " << 1.0/std::sqrt(static_cast<double>(fanSumCounter.getMinFanCount())) << std::endl;
 	   }
 
 	   if (fn.find("annular")!=std::string::npos){
@@ -778,12 +826,29 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
 										  double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
 
+										  //=================================================================
+										  // 3D Fan-Sum Efficiency (Pepin et al. 2011, Equation 4)
+										  // Replaces the old per-component efficiency calculation
+										  //=================================================================
+										  // Compute transaxial positions for fan-sum lookup (excluding layers)
+										  int strideCrystalTr = 1;
+										  int strideSubmoduleTr = nCrystalsTransaxial;
+										  int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
+										  int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
 
-										  double effFactorSubmodule = pow(detectorEfficyCounts.getMaxSubmoduleCount(),2)/(detectorEfficyCounts.getSubmoduleCount(submoduleID1)*detectorEfficyCounts.getSubmoduleCount(submoduleID2));
-										  double effFactorCrystal = pow(detectorEfficyCounts.getMaxCrystalCount(),2)/(detectorEfficyCounts.getCrystalCount(crystalID1)*detectorEfficyCounts.getCrystalCount(crystalID2));
-										  double effFactorLayer = pow(detectorEfficyCounts.getMaxLayerCount(),2)/(detectorEfficyCounts.getLayerCount(layerID1)*detectorEfficyCounts.getLayerCount(layerID2));
+										  int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
+										                    + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
+										                    + (moduleID1 % nModulesTransaxial) * strideModuleTr
+										                    + rsectorID1 * strideRsectorTr;
 
-										  double effNormFactor = effFactorSubmodule*effFactorCrystal*effFactorLayer;
+										  int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
+										                    + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
+										                    + (moduleID2 % nModulesTransaxial) * strideModuleTr
+										                    + rsectorID2 * strideRsectorTr;
+
+										  // Get fan-sum based efficiency factor
+										  double effNormFactor = fanSumCounter.getEfficiencyFactor(
+										      ringID1, transaxialID1, ringID2, transaxialID2);
 
 
 
@@ -938,6 +1003,21 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
       }
     }
     csvInterf.close();
+  }
+
+  // 4) fan_sum_efficiency: per crystal (ring, transaxial) -> fan count, ring average, efficiency
+  {
+    std::ofstream csvFanSum(outputDir + outputMatrixFileName + "_fan_sum_efficiency.csv");
+    csvFanSum << "ringID,transaxialID,fanCount,ringAverage,efficiencyFactor\n";
+    for (uint32_t u = 0; u < fanSumCounter.nRings; ++u) {
+      double ringAvg = fanSumCounter.getRingAverageFan(u);
+      for (uint32_t i = 0; i < fanSumCounter.nTransaxial; ++i) {
+        Long64_t fanCount = fanSumCounter.getFanCount(u, i);
+        double effFactor = (fanCount > 0 && ringAvg > 0) ? (ringAvg / static_cast<double>(fanCount)) : 1.0;
+        csvFanSum << u << "," << i << "," << fanCount << "," << ringAvg << "," << effFactor << "\n";
+      }
+    }
+    csvFanSum.close();
   }
   // ---------------------------------------------------------------------------
 

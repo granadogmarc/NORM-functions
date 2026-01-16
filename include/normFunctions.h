@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <utility>
+#include <limits>
 
 typedef float Float_t;
 
@@ -435,6 +436,124 @@ struct DetectorCounters {
 
 };
 
+//=============================================================================
+// FanSumCounter: 3D Fan-Sum Algorithm for Intrinsic Detector Efficiency
+// Based on Pepin et al. 2011 IEEE NSS (Equation 4)
+//
+// The fan-sum algorithm computes intrinsic detector efficiency ε_ui as:
+//   ε_ui = (1/L × Σ_i' Σ_v Σ_j t_ui'vj) / (Σ_v Σ_j t_uivj)
+//
+// Where:
+//   u = ring index (axial position)
+//   i = transaxial crystal position within ring
+//   L = number of transaxial crystals per ring
+//   M = number of rings
+//   t_uivj = coincidences for LOR between crystal (u,i) and crystal (v,j)
+//
+// The denominator is the "fan" of crystal (u,i): all coincidences involving it
+// The numerator is the average fan across all crystals in ring u
+//=============================================================================
+struct FanSumCounter {
+    // 2D array: fanCounts[ring][transaxialPos] = total coincidences for that crystal
+    std::vector<std::vector<Long64_t>> fanCounts;
+    uint32_t nRings;           // Number of axial rings (M)
+    uint32_t nTransaxial;      // Number of transaxial positions per ring (L)
+
+    // Constructor
+    FanSumCounter(uint32_t numRings, uint32_t numTransaxial)
+        : nRings(numRings),
+          nTransaxial(numTransaxial),
+          fanCounts(numRings, std::vector<Long64_t>(numTransaxial, 0)) {
+        std::cout << "Created FanSumCounter with " << nRings << " rings and "
+                  << nTransaxial << " transaxial positions per ring" << std::endl;
+    }
+
+    // Add a coincidence count to crystal (ringID, transaxialID)
+    void addCount(uint32_t ringID, uint32_t transaxialID) {
+        if (ringID < nRings && transaxialID < nTransaxial) {
+            fanCounts[ringID][transaxialID]++;
+        }
+    }
+
+    // Get the fan count for a specific crystal
+    Long64_t getFanCount(uint32_t ringID, uint32_t transaxialID) const {
+        if (ringID < nRings && transaxialID < nTransaxial) {
+            return fanCounts[ringID][transaxialID];
+        }
+        return 0;
+    }
+
+    // Compute the average fan count for a given ring (1/L × Σ_i fan_ui)
+    double getRingAverageFan(uint32_t ringID) const {
+        if (ringID >= nRings) return 0.0;
+        Long64_t sum = 0;
+        uint32_t validCount = 0;
+        for (uint32_t i = 0; i < nTransaxial; ++i) {
+            if (fanCounts[ringID][i] > 0) {
+                sum += fanCounts[ringID][i];
+                ++validCount;
+            }
+        }
+        return validCount > 0 ? static_cast<double>(sum) / validCount : 0.0;
+    }
+
+    // Compute the global average fan count across all crystals
+    double getGlobalAverageFan() const {
+        Long64_t sum = 0;
+        uint32_t validCount = 0;
+        for (uint32_t u = 0; u < nRings; ++u) {
+            for (uint32_t i = 0; i < nTransaxial; ++i) {
+                if (fanCounts[u][i] > 0) {
+                    sum += fanCounts[u][i];
+                    ++validCount;
+                }
+            }
+        }
+        return validCount > 0 ? static_cast<double>(sum) / validCount : 0.0;
+    }
+
+    // Compute the intrinsic efficiency factor for crystal (u1,i1) paired with (u2,i2)
+    // Returns: (avgFan_u1 × avgFan_u2) / (fan_u1i1 × fan_u2i2)
+    double getEfficiencyFactor(uint32_t ring1, uint32_t trans1,
+                                uint32_t ring2, uint32_t trans2) const {
+        Long64_t fan1 = getFanCount(ring1, trans1);
+        Long64_t fan2 = getFanCount(ring2, trans2);
+        if (fan1 <= 0 || fan2 <= 0) return 1.0;  // Avoid division by zero
+
+        double avg1 = getRingAverageFan(ring1);
+        double avg2 = getRingAverageFan(ring2);
+        if (avg1 <= 0.0 || avg2 <= 0.0) return 1.0;
+
+        return (avg1 * avg2) / (static_cast<double>(fan1) * static_cast<double>(fan2));
+    }
+
+    // Get minimum fan count (for diagnostics)
+    Long64_t getMinFanCount() const {
+        Long64_t minVal = std::numeric_limits<Long64_t>::max();
+        for (uint32_t u = 0; u < nRings; ++u) {
+            for (uint32_t i = 0; i < nTransaxial; ++i) {
+                if (fanCounts[u][i] > 0 && fanCounts[u][i] < minVal) {
+                    minVal = fanCounts[u][i];
+                }
+            }
+        }
+        return minVal == std::numeric_limits<Long64_t>::max() ? 0 : minVal;
+    }
+
+    // Get maximum fan count (for diagnostics)
+    Long64_t getMaxFanCount() const {
+        Long64_t maxVal = 0;
+        for (uint32_t u = 0; u < nRings; ++u) {
+            for (uint32_t i = 0; i < nTransaxial; ++i) {
+                if (fanCounts[u][i] > maxVal) {
+                    maxVal = fanCounts[u][i];
+                }
+            }
+        }
+        return maxVal;
+    }
+};
+
 
 
 
@@ -454,6 +573,7 @@ std::pair<size_t, size_t> processFile( const std::string &filename,
 				  double					meanRingComponentVector,
 				  vectorRingComponent		&ringComponentVector,
 				  DetectorCounters &detectorEfficyCounts,
+				  FanSumCounter    &fanSumCounter,  // 3D fan-sum for intrinsic efficiency
 				  //RadialNormCounter	&radialNormCounts,
 				  //double 			&meanCrystalLORCounts,
 				  Long64_t			&usedLOR,
