@@ -31,60 +31,43 @@ static inline TransaxialStrides makeTransaxialStrides(uint32_t nModulesTransaxia
 }
 
 
-std::pair<size_t, size_t>
-processFile(const std::string &filename,
-			matrixRingsComponent		&ringsComponentMatrix,
-			double						meanRingsComponentMatrix,
-			matrixRingsComponent		&blockTrAComponentMatrix,
-			double						meanBlockTrAComponentMatrix,
-			vectorRadialComponent		&radialComponentVector,
-			double						meanRingComponentVector,
-      vectorRingComponent		&ringComponentVector,
-			DetectorCounters &detectorEfficyCounts,
-      FanSumCounter    &fanSumCounter,  // 3D fan-sum for intrinsic efficiency
-      Long64_t &usedLOR,
-      Long64_t &totalEvents,
-            uint32_t nRsectorsAngPos,
-      uint32_t nRsectorsAxial,
-            bool invertDetOrder,
-      int rsectorIdOrder,
-            uint32_t nModulesTransaxial,
-      uint32_t nModulesAxial,
-            uint32_t nSubmodulesTransaxial,
-      uint32_t nSubmodulesAxial,
-            uint32_t nCrystalsTransaxial,
-      uint32_t nCrystalsAxial,
-            uint8_t nLayers,
-      uint32_t *nCrystalPerLayer,
-            uint32_t nLayersRptTransaxial,
-      uint32_t nLayersRptAxial,
-            const Phantom &myPhantom,
-      const Phantom &emptyPhantom,
-  float crystalDepth,
-    float detectorRadius,
+//=============================================================================
+// processSolidCyl_BlockCounts: Pass 1 - accumulate ring counts and fan-sum
+// This populates ringComponentVector, fanSumCounter, and detectorEfficyCounts
+//=============================================================================
+void processSolidCyl_BlockCounts(
+    const std::string &filename,
+    vectorRingComponent &ringComponentVector,
+    DetectorCounters &detectorEfficyCounts,
+    FanSumCounter &fanSumCounter,
+    Long64_t &totalEvents,
+    uint32_t nRsectorsAngPos,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t nLayers,
+    float crystalDepth,
     float transAxialSize,
     float axialSize)
 {
-    size_t newKeys = 0;
-    size_t localMax = 0;
-
     TFile *file = TFile::Open(filename.c_str());
     if (!file || file->IsZombie()) {
         std::cerr << "Cannot open file: " << filename << std::endl;
-        return {0, 0};
+        return;
     }
 
     TTree *Coincidences = (TTree *)file->Get("Coincidences");
     if (!Coincidences) {
         std::cerr << "Cannot find TTree 'Coincidences' in file: " << filename << std::endl;
-        return {0, 0};
+        file->Close();
+        return;
     }
 
     int rsectorID1, moduleID1, submoduleID1, crystalID1, layerID1;
     int rsectorID2, moduleID2, submoduleID2, crystalID2, layerID2;
-    Float_t gPosX1, gPosY1, gPosZ1, gPosX2, gPosY2, gPosZ2;
-
-
 
     Coincidences->SetBranchAddress("rsectorID1", &rsectorID1);
     Coincidences->SetBranchAddress("moduleID1", &moduleID1);
@@ -97,314 +80,333 @@ processFile(const std::string &filename,
     Coincidences->SetBranchAddress("crystalID2", &crystalID2);
     Coincidences->SetBranchAddress("layerID2", &layerID2);
 
+    Long64_t nEvents = Coincidences->GetEntries();
+    totalEvents += nEvents;
+
+    double PI = 3.14159265358979323846;
+
+    std::cout << "=== Pass 1: Accumulating block counts from " << filename << " ===" << std::endl;
+    std::cout << "  Processing " << nEvents << " events..." << std::endl;
+
+    for (Long64_t i = 0; i < nEvents; ++i) {
+        Coincidences->GetEntry(i);
+
+        // Detector efficiency counts
+        detectorEfficyCounts.addSubmoduleCount(submoduleID1);
+        detectorEfficyCounts.addSubmoduleCount(submoduleID2);
+        detectorEfficyCounts.addCrystalCount(crystalID1);
+        detectorEfficyCounts.addCrystalCount(crystalID2);
+        detectorEfficyCounts.addLayerCount(layerID1);
+        detectorEfficyCounts.addLayerCount(layerID2);
+
+        // 3D Fan-Sum: Accumulate counts per crystal (ring, transaxial)
+        int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
+        int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
+
+        // Compute transaxial position (excluding layers)
+        int strideCrystalTr = 1;
+        int strideSubmoduleTr = nCrystalsTransaxial;
+        int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
+        int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
+
+        int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
+                          + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
+                          + (moduleID1 % nModulesTransaxial) * strideModuleTr
+                          + rsectorID1 * strideRsectorTr;
+
+        int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
+                          + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
+                          + (moduleID2 % nModulesTransaxial) * strideModuleTr
+                          + rsectorID2 * strideRsectorTr;
+
+        // Add counts to both crystals involved in this coincidence
+        fanSumCounter.addCount(ringID1, transaxialID1);
+        fanSumCounter.addCount(ringID2, transaxialID2);
+
+        // Accumulate axial block component (intra-ring coincidences)
+        if (moduleID1 == moduleID2 && submoduleID1 == submoduleID2) {
+            ringComponentVector[moduleID1 + nModulesAxial * submoduleID1] += 1;
+        }
+    }
+
+    file->Close();
+
+    // Diagnostic output
+    auto minIt = std::min_element(ringComponentVector.begin(), ringComponentVector.end());
+    auto maxIt = std::max_element(ringComponentVector.begin(), ringComponentVector.end());
+    std::cout << "  Block counts complete:" << std::endl;
+    std::cout << "    Min ring count: " << *minIt << " (Poissonian error: " << std::pow(*minIt, -0.5) << ")" << std::endl;
+    std::cout << "    Max ring count: " << *maxIt << std::endl;
+    std::cout << "    Mean ring count: " << meanVector(ringComponentVector) << std::endl;
+}
+
+//=============================================================================
+// processSolidCyl_GeomMatrix: Pass 2 - build geometric matrix with smoothed block correction
+// Call this AFTER smoothing ringComponentVector
+//=============================================================================
+void processSolidCyl_GeomMatrix(
+    const std::string &filename,
+    matrixRingsComponent &ringsComponentMatrix,
+    const vectorRingComponent &ringComponentVector,  // Should be smoothed before this call
+    double meanRingComponentVector,
+    Long64_t &totalEvents,
+    uint32_t nRsectorsAngPos,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t nLayers,
+    float crystalDepth,
+    float transAxialSize,
+    float axialSize)
+{
+    TFile *file = TFile::Open(filename.c_str());
+    if (!file || file->IsZombie()) {
+        std::cerr << "Cannot open file: " << filename << std::endl;
+        return;
+    }
+
+    TTree *Coincidences = (TTree *)file->Get("Coincidences");
+    if (!Coincidences) {
+        std::cerr << "Cannot find TTree 'Coincidences' in file: " << filename << std::endl;
+        file->Close();
+        return;
+    }
+
+    int rsectorID1, moduleID1, submoduleID1, crystalID1, layerID1;
+    int rsectorID2, moduleID2, submoduleID2, crystalID2, layerID2;
+
+    Coincidences->SetBranchAddress("rsectorID1", &rsectorID1);
+    Coincidences->SetBranchAddress("moduleID1", &moduleID1);
+    Coincidences->SetBranchAddress("submoduleID1", &submoduleID1);
+    Coincidences->SetBranchAddress("crystalID1", &crystalID1);
+    Coincidences->SetBranchAddress("layerID1", &layerID1);
+    Coincidences->SetBranchAddress("rsectorID2", &rsectorID2);
+    Coincidences->SetBranchAddress("moduleID2", &moduleID2);
+    Coincidences->SetBranchAddress("submoduleID2", &submoduleID2);
+    Coincidences->SetBranchAddress("crystalID2", &crystalID2);
+    Coincidences->SetBranchAddress("layerID2", &layerID2);
+
+    Long64_t nEvents = Coincidences->GetEntries();
+    // Don't add to totalEvents again - already counted in Pass 1
+
+    double PI = 3.14159265358979323846;
+
+    std::cout << "=== Pass 2: Building geometric matrix from " << filename << " ===" << std::endl;
+    std::cout << "  Using smoothed ringComponentVector (mean=" << meanRingComponentVector << ")" << std::endl;
+    std::cout << "  Processing " << nEvents << " events..." << std::endl;
+
+    for (Long64_t i = 0; i < nEvents; ++i) {
+        Coincidences->GetEntry(i);
+
+        TVector3 gPos1 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32,
+                    layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1,
+                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
+        TVector3 gPos2 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32.,
+                    layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2,
+                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
+
+        Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
+
+        // FILTER for the FIELD OF VIEW
+        if (mySinogram.R > 300) continue;
+
+        int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
+        int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
+
+        // Guard against zero ring counts
+        if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
+            continue;
+        }
+
+        // Compute block correction using SMOOTHED ringComponentVector
+        double blockCorrection = std::sqrt(meanRingComponentVector * meanRingComponentVector /
+                                          (ringComponentVector[ringID1] * ringComponentVector[ringID2]));
+
+        ringsComponentMatrix[ringID1][ringID2] += mySinogram.Cos_theta * blockCorrection;
+    }
+
+    file->Close();
+    std::cout << "  Geometric matrix complete." << std::endl;
+}
+
+//=============================================================================
+// processAnnular: Build radialComponentVector and blockTrAComponentMatrix
+// Uses results from solidCyl processing
+//=============================================================================
+void processAnnular(
+    const std::string &filename,
+    matrixRingsComponent &blockTrAComponentMatrix,
+    vectorRadialComponent &radialComponentVector,
+    const vectorRingComponent &ringComponentVector,
+    double meanRingComponentVector,
+    const matrixRingsComponent &ringsComponentMatrix,
+    double meanRingsComponentMatrix,
+    const FanSumCounter &fanSumCounter,
+    Long64_t &totalEvents,
+    uint32_t nRsectorsAngPos,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t nLayers,
+    const Phantom &myPhantom,
+    const Phantom &emptyPhantom,
+    float crystalDepth,
+    float transAxialSize,
+    float axialSize)
+{
+    TFile *file = TFile::Open(filename.c_str());
+    if (!file || file->IsZombie()) {
+        std::cerr << "Cannot open file: " << filename << std::endl;
+        return;
+    }
+
+    TTree *Coincidences = (TTree *)file->Get("Coincidences");
+    if (!Coincidences) {
+        std::cerr << "Cannot find TTree 'Coincidences' in file: " << filename << std::endl;
+        file->Close();
+        return;
+    }
+
+    int rsectorID1, moduleID1, submoduleID1, crystalID1, layerID1;
+    int rsectorID2, moduleID2, submoduleID2, crystalID2, layerID2;
+
+    Coincidences->SetBranchAddress("rsectorID1", &rsectorID1);
+    Coincidences->SetBranchAddress("moduleID1", &moduleID1);
+    Coincidences->SetBranchAddress("submoduleID1", &submoduleID1);
+    Coincidences->SetBranchAddress("crystalID1", &crystalID1);
+    Coincidences->SetBranchAddress("layerID1", &layerID1);
+    Coincidences->SetBranchAddress("rsectorID2", &rsectorID2);
+    Coincidences->SetBranchAddress("moduleID2", &moduleID2);
+    Coincidences->SetBranchAddress("submoduleID2", &submoduleID2);
+    Coincidences->SetBranchAddress("crystalID2", &crystalID2);
+    Coincidences->SetBranchAddress("layerID2", &layerID2);
 
     Long64_t nEvents = Coincidences->GetEntries();
     totalEvents += nEvents;
 
     double PI = 3.14159265358979323846;
 
-    int castPosID =0;
+    int maxRadialID = int(nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial / 2);
+    int maxTrAID = nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
 
-    bool first_entry = true;
-
-
-	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
-	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
-
-
-    int maxID =   nRsectorsAngPos * nRsectorsAxial *
-                nModulesTransaxial * nModulesAxial *
-                nSubmodulesTransaxial * nSubmodulesAxial *
-                nCrystalsTransaxial * nCrystalsAxial * nLayers;
-
+    std::cout << "=== Processing annular source from " << filename << " ===" << std::endl;
+    std::cout << "  Processing " << nEvents << " events..." << std::endl;
 
     for (Long64_t i = 0; i < nEvents; ++i) {
         Coincidences->GetEntry(i);
 
-
-
-        //if (i>pow(10,6)) break;
-
-
-        TVector3 gPos1 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32,layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1,
+        TVector3 gPos1 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32,
+                    layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1,
                     crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
-        TVector3 gPos2 = convertToPosition(323.8, -27.0,-27.0-(nModulesAxial-1)*63*0.5,2*PI/32.,layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2,
+        TVector3 gPos2 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32.,
+                    layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2,
                     crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
 
-        int castorID1 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
-                                             nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
-                                             nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
-                                             nLayersRptTransaxial, nLayersRptAxial,
-                                             layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);
+        Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
-        int castorID2 = ConvertIDcylindrical(nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
-                                             nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
-                                             nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
-                                             nLayersRptTransaxial, nLayersRptAxial,
-                                             layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);
+        // FILTER for the FIELD OF VIEW
+        if (mySinogram.R > 300) continue;
 
+        float lineIntegral = ComputePhantomLineIntegral(gPos1, gPos2, myPhantom, 1, 1);
+        float emptyIntegral = ComputePhantomLineIntegral(gPos1, gPos2, emptyPhantom, 1, 1);
+        float finalIntegral = lineIntegral - emptyIntegral;
 
-
-        if (castorID1 > maxID) {std::cout << "Error ID1 is too big ! It is: "<<castorID1<<
-        " with: "<<layerID1<<", "<<crystalID1<<", "<< submoduleID1<<", "<<moduleID1<<", "<< rsectorID1<<std::endl;
-          std::cout << "MaxID is: "<<maxID<<std::endl;
-      }
-        if (castorID2 > maxID){ std::cout << "Error ID2 is too big ! It is: "<<castorID2<<
-        " with: "<<layerID2<<", "<<crystalID2<<", "<< submoduleID2<<", "<<moduleID2<<", "<< rsectorID2<<std::endl;
-          std::cout << "MaxID is: "<<maxID<<std::endl;}
-
-        if (castorID1 < castorID2) {
-            std::swap(castorID1, castorID2);
-            std::swap(layerID1,layerID2);
-            std::swap(crystalID1,crystalID2);
-            std::swap(submoduleID1,submoduleID2);
-            std::swap(moduleID1,moduleID2);
-            std::swap(rsectorID1,rsectorID2);
-            std::swap(gPos1, gPos2);
-        }
-
-        double R(0);
-
-        Sinogram mySinogram;
-
-        //This is mandatory correction for the detector radius to be adjusted to the real size of the max LOR length possible
-        //The layerID goes from inner to outer so the bigger it is the bigger the correction will be
-
-
-        mySinogram =  ConvertToSinogram(gPos1,gPos2);
-
-    	//FILTER for the FIELD OF VIEW!!!!
-    	if (mySinogram.R > 300) continue;
-    	R=mySinogram.R;
-
-    	if(std::isnan(R)) {std::cout<<"Error R is nan!"<<std::endl;
-    	break;}
-
-
-
-
-        if (filename.find("solidCyl")!=std::string::npos){
-
-        	detectorEfficyCounts.addSubmoduleCount(submoduleID1);
-            detectorEfficyCounts.addSubmoduleCount(submoduleID2);
-            detectorEfficyCounts.addCrystalCount(crystalID1);
-            detectorEfficyCounts.addCrystalCount(crystalID2);
-            detectorEfficyCounts.addLayerCount(layerID1);
-            detectorEfficyCounts.addLayerCount(layerID2);
-
-            //=================================================================
-            // 3D Fan-Sum: Accumulate counts per crystal (ring, transaxial)
-            // Ring = moduleID + nModulesAxial * submoduleID (axial position)
-            // Transaxial = rsector * stride + module_tr * stride + submod_tr * stride + crystal_tr
-            // (excluding layers as per user request)
-            //=================================================================
-            int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
-            int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
-
-            // Compute transaxial position (excluding layers)
-            int strideCrystalTr = 1;
-            int strideSubmoduleTr = nCrystalsTransaxial;
-            int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
-            int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
-
-            int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
-                              + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
-                              + (moduleID1 % nModulesTransaxial) * strideModuleTr
-                              + rsectorID1 * strideRsectorTr;
-
-            int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
-                              + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
-                              + (moduleID2 % nModulesTransaxial) * strideModuleTr
-                              + rsectorID2 * strideRsectorTr;
-
-            // Add counts to both crystals involved in this coincidence
-            fanSumCounter.addCount(ringID1, transaxialID1);
-            fanSumCounter.addCount(ringID2, transaxialID2);
-
-            //creating the axial block component:
-            if(moduleID1 == moduleID2){
-            	if(submoduleID1 == submoduleID2){//TODO this should be generalised to identify the element with axial component
-
-            		ringComponentVector[moduleID1+nModulesAxial*submoduleID1] +=1;
-            	}
-            }
-            //Creating the geometric Axial component once we've filled the values of ring comonents!
-            if (i>int(nEvents*0.25)){
-            	meanRingComponentVector = meanVector(ringComponentVector);
-            	if(first_entry) {
-            		auto minIt = std::min_element(ringComponentVector.begin(), ringComponentVector.end());
-
-            		std::cout<<"The number of coincidences up to this point is: "<<nEvents<<" we start computing the ringsComponentMatrix here with the following entries at each bin."<<std::endl;
-            		std::cout<<"The bin with less entries has "<<*minIt<<" entries. Poissoinian error = "<<pow(*minIt,-0.5)<<std::endl;
-            		std::cout<<"The mean value of the vector is: "<<meanRingComponentVector<<std::endl;
-            		first_entry=false;
-            	}
-
-            	double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[moduleID1+nModulesAxial*submoduleID1]*ringComponentVector[moduleID2+nModulesAxial*submoduleID2]));
-            	ringsComponentMatrix[moduleID1+nModulesAxial*submoduleID1][moduleID2+nModulesAxial*submoduleID2] += mySinogram.Cos_theta*blockCorrection;
-
-            }
-
-
-
-        }
-
-
-        else if (filename.find("annular")!=std::string::npos){
-
-
-
-        	float lineIntegral = ComputePhantomLineIntegral(gPos1, gPos2, myPhantom, 1, 1);
-        	float emptyIntegral = ComputePhantomLineIntegral(gPos1, gPos2, emptyPhantom, 1, 1);
-          float finalIntegral = lineIntegral - emptyIntegral;
-
-          if(!(lineIntegral>0)) std::cout<<"ERROR initial INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
-          if(!(emptyIntegral>0)) std::cout<<"ERROR empty INTEGRAL IS NOT A VALUE above 0!"<<std::endl;
-          if(!(finalIntegral>0)) {
-            std::cout<<"ERROR final INTEGRAL IS NOT A VALUE above 0! Skipping event to avoid division by zero."<<std::endl;
+        if (!(finalIntegral > 0)) {
             continue;
-          }
+        }
 
+        int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
+        int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
 
+        // Guard against zero ring counts or zero matrix entries
+        if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
+            continue;
+        }
+        double denom_block = ringComponentVector[ringID1] * ringComponentVector[ringID2];
+        double blockCorrection = std::sqrt((long double)meanRingComponentVector * (long double)meanRingComponentVector / (long double)denom_block);
 
-        	//Let's computeStrides:
+        double geomAxCorrection = 1.0;
+        if (ringsComponentMatrix[ringID1][ringID2] != 0.0)
+            geomAxCorrection = meanRingsComponentMatrix / (ringsComponentMatrix[ringID1][ringID2]);
+        else {
+            continue;
+        }
 
-              int ringID1 = moduleID1+nModulesAxial*submoduleID1; //TODO generalise it for all geometric cases
-              int ringID2 = moduleID2+nModulesAxial*submoduleID2; //TODO generalise it for all geometric cases
+        // Compute transaxial strides
+        TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
+        int strideLayer = ts.strideLayer;
+        int strideCrystal = ts.strideCrystal;
+        int strideSubmodule = ts.strideSubmodule;
+        int strideModule = ts.strideModule;
+        int strideRsector = ts.strideRsector;
 
-                                          // Guard against zero ring counts or zero matrix entries to avoid NaNs/infs
-                                          if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
-                                            // missing ring statistics -> skip this event
-                                            continue;
-                                          }
-                                          double denom_block = ringComponentVector[ringID1]*ringComponentVector[ringID2];
-                                          double blockCorrection = std::sqrt((long double)meanRingComponentVector*(long double)meanRingComponentVector/ (long double)denom_block);
+        int ringPosID1 = 0;
+        int ringPosID2 = 0;
 
-                                          double geomAxCorrection = 1.0;
-                                          if (ringsComponentMatrix[ringID1][ringID2] != 0.0)
-                                            geomAxCorrection = meanRingsComponentMatrix / (ringsComponentMatrix[ringID1][ringID2]);
-                                          else {
-                                            // missing geometric axial data -> skip
-                                            continue;
-                                          }
+        if (nModulesTransaxial > 1) {
+            ringPosID1 += moduleID1 * strideModule;
+            ringPosID2 += moduleID2 * strideModule;
+        }
+        if (nSubmodulesTransaxial > 1) {
+            ringPosID1 += submoduleID1 * strideSubmodule;
+            ringPosID2 += submoduleID2 * strideSubmodule;
+        }
+        if (nCrystalsTransaxial > 1) {
+            ringPosID1 += crystalID1 * strideCrystal;
+            ringPosID2 += crystalID2 * strideCrystal;
+        }
 
-              //18D removing layers from transaxial elements (use central helper)
-              TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
-              int strideLayer     = ts.strideLayer;
-              int strideCrystal   = ts.strideCrystal;
-              int strideSubmodule = ts.strideSubmodule;
-              int strideModule    = ts.strideModule;
-              int strideRsector   = ts.strideRsector;
+        int trAID = ringPosID1;
 
-			  //The need to use linear repeaters implies that if there is an axial component there cannot be a transaxial component
-			  //this results in no need for divisions over axial repetitions.
+        ringPosID1 += rsectorID1 * strideRsector;
+        ringPosID2 += rsectorID2 * strideRsector;
 
-			  int ringPosID1 = 0;
-			  int ringPosID2 = 0;
+        int totalTransaxial = nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
 
-			  if (nModulesTransaxial > 1){
-				  ringPosID1 += moduleID1*strideModule;
-			  	  ringPosID2 += moduleID2*strideModule;
-			  }
-			  if(nSubmodulesTransaxial > 1){
-			  	  ringPosID1 += submoduleID1 * strideSubmodule;
-			  	  ringPosID2 += submoduleID2 * strideSubmodule;
-			  }
-			  if (nCrystalsTransaxial > 1){
-				  ringPosID1 += crystalID1 * strideCrystal;
-			  	  ringPosID2 += crystalID2 * strideCrystal;
-		  	  }
+        int delta = abs(ringPosID1 - ringPosID2);
 
-              
-/*
-			  if (nLayers > 1){
-				  ringPosID1 += layerID1 * strideLayer;
-			  	  ringPosID2 += layerID2 * strideLayer;
-		  }
-		  */
-			  //Since the radialID is computed as the difference between the two ringPosID,
-			  //the ringPosID1 before adding the rsector value already defines the intra
-			  //block position for each radialID:
-			  int trAID = ringPosID1;
-
-			  ringPosID1 += rsectorID1 * strideRsector;
-			  ringPosID2 += rsectorID2 * strideRsector;
-
-			  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;//18D removing layers from total transaxial
-
-			  // Compute delta between the two transaxial detector indices
-			  int delta = abs(ringPosID1 - ringPosID2);
-
-
-
-        // If delta is 0 or equals totalTransaxial then radialID becomes -1 -> debug and skip
         if (delta == 0 || delta == totalTransaxial) {
-            int ringPosBefore1 = ringPosID1 - rsectorID1 * strideRsector;
-            int ringPosBefore2 = ringPosID2 - rsectorID2 * strideRsector;
-            std::cerr << "DEBUG: invalid delta encountered in processFile (delta=" << delta << ") -> radialID would be -1.\n"
-                      << " indices: layer1=" << layerID1 << ", module1=" << moduleID1 << ", submodule1=" << submoduleID1 << ", crystal1=" << crystalID1 << ", rsector1=" << rsectorID1 << "\n"
-                      << "          layer2=" << layerID2 << ", module2=" << moduleID2 << ", submodule2=" << submoduleID2 << ", crystal2=" << crystalID2 << ", rsector2=" << rsectorID2 << "\n"
-                      << " ringPos before rsector: " << ringPosBefore1 << " vs " << ringPosBefore2 << "\n"
-                      << " ringPos after rsector:  " << ringPosID1 << " vs " << ringPosID2 << "\n"
-                      << " strideRsector=" << strideRsector << ", totalTransaxial=" << totalTransaxial << "\n";
-            // Skip this invalid pairing; it should not contribute to transaxial bins
             continue;
         }
 
-        // Fold the radial ID so that opposite orientations map to the same bin
-        int radialID = std::min(delta, totalTransaxial - delta)-1;
+        int radialID = std::min(delta, totalTransaxial - delta) - 1;
 
-			  // Safety: ensure radialID stays within bounds
-			  // (expected size is maxRadialID = totalTransaxial/2)
-			  if (radialID < 0 || radialID >= maxRadialID) {
-			      std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
-
-			  }
-
-
-
-              //=================================================================
-              // 3D Fan-Sum Efficiency (Pepin et al. 2011, Equation 4)
-              // Uses fan-sum counter populated during cylinder scan
-              //=================================================================
-              // Compute transaxial positions for fan-sum lookup (excluding layers)
-              int strideCrystalTr = 1;
-              int strideSubmoduleTr = nCrystalsTransaxial;
-              int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
-              int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
-
-              int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
-                                + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
-                                + (moduleID1 % nModulesTransaxial) * strideModuleTr
-                                + rsectorID1 * strideRsectorTr;
-
-              int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
-                                + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
-                                + (moduleID2 % nModulesTransaxial) * strideModuleTr
-                                + rsectorID2 * strideRsectorTr;
-
-              // Get fan-sum based efficiency factor
-              double effNormFactor = fanSumCounter.getEfficiencyFactor(
-                  ringID1, transaxialID1, ringID2, transaxialID2);
-
-
-              radialComponentVector[radialID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
-
-              blockTrAComponentMatrix[radialID][trAID] += blockCorrection*geomAxCorrection*effNormFactor/finalIntegral;
-
-
-        }
-      else{
-        	std::cerr << "Error: The file doesn't contain information about the source." << "\n";
-        	std::cerr << "Include 'annular' or 'solidCyl' in your filename to compute the norm factors accordingly" << "\n";
-        	exit(EXIT_FAILURE);
+        if (radialID < 0 || radialID >= maxRadialID) {
+            std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
+            continue;
         }
 
+        // 3D Fan-Sum Efficiency
+        int strideCrystalTr = 1;
+        int strideSubmoduleTr = nCrystalsTransaxial;
+        int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
+        int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
+
+        int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
+                          + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
+                          + (moduleID1 % nModulesTransaxial) * strideModuleTr
+                          + rsectorID1 * strideRsectorTr;
+
+        int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
+                          + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
+                          + (moduleID2 % nModulesTransaxial) * strideModuleTr
+                          + rsectorID2 * strideRsectorTr;
+
+        double effNormFactor = fanSumCounter.getEfficiencyFactor(
+            ringID1, transaxialID1, ringID2, transaxialID2);
+
+        radialComponentVector[radialID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
+        blockTrAComponentMatrix[radialID][trAID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
     }
 
-
     file->Close();
-    return {newKeys, localMax};
+    std::cout << "  Annular processing complete." << std::endl;
 }
 
 std::vector<DetectorIndices> buildCastorIDLUT(
@@ -494,7 +496,9 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
     float axialSize,
     float crystalDepth,
     float detectorRadius,
-    const std::string &outCSV
+    const std::string &outCSV,
+    double axialSigma,
+    double transaxialSigma
       )
 {
 
@@ -554,78 +558,152 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   double meanRadialComponentVector = 1;
   double meanBlockTrAComponentMatrix = 1;
 
-  
+  //=============================================================================
+  // Two-pass processing for solidCyl, then annular processing
+  // This allows proper smoothing of ringComponentVector before building ringsComponentMatrix
+  // Supports multiple files of each type - smoothing applied after ALL solidCyl files processed
+  //=============================================================================
 
-  for(auto &fn : filenames) {
+  // Separate solidCyl and annular files
+  std::vector<std::string> solidCylFiles;
+  std::vector<std::string> annularFiles;
+  for (const auto &fn : filenames) {
+      if (fn.find("solidCyl") != std::string::npos) {
+          solidCylFiles.push_back(fn);
+      } else if (fn.find("annular") != std::string::npos) {
+          annularFiles.push_back(fn);
+      }
+  }
 
+  // === SOLID CYLINDER PROCESSING (Two-pass) ===
+  if (!solidCylFiles.empty()) {
+      std::cout << "\n========================================" << std::endl;
+      std::cout << "SOLID CYLINDER PROCESSING" << std::endl;
+      std::cout << "  Found " << solidCylFiles.size() << " solidCyl file(s)" << std::endl;
+      std::cout << "========================================\n" << std::endl;
 
-	  std::cout<<"Before opening the file usedLOR = "<<usedLOR<<" and totalEvents = "<<totalEvents<<std::endl;
-
-
-	size_t newKeys, localMaxHits;
-	std::tie(newKeys, localMaxHits)
-  = processFile(fn,
-        ringsComponentMatrix,
-        meanRingsComponentMatrix,
-        blockTrAComponentMatrix,
-        meanBlockTrAComponentMatrix,
-        radialComponentVector,
-        meanRadialComponentVector,
-        ringComponentVector,
-        detectorEfficyCounts,
-        fanSumCounter,  // 3D fan-sum for intrinsic efficiency
-        usedLOR,
-        totalEvents,
+      // Pass 1: Accumulate block counts from ALL solidCyl files
+      std::cout << "--- PASS 1: Accumulating block counts ---\n" << std::endl;
+      for (const auto &solidCylFile : solidCylFiles) {
+          processSolidCyl_BlockCounts(
+              solidCylFile,
+              ringComponentVector,
+              detectorEfficyCounts,
+              fanSumCounter,
+              totalEvents,
               nRsectorsAngPos,
-              nRsectorsAxial,
-              invertDetOrder,
-              rsectorIdOrder,
               nModulesTransaxial,
               nModulesAxial,
               nSubmodulesTransaxial,
               nSubmodulesAxial,
               nCrystalsTransaxial,
               nCrystalsAxial,
-            nLayers,
-            nCrystalPerLayer,
-            nLayersRptTransaxial,
-            nLayersRptAxial,
-            myPhantom,
-            emptyPhantom,
-			crystalDepth,
-            detectorRadius,
-            transAxialSize,
-            axialSize);
+              nLayers,
+              crystalDepth,
+              transAxialSize,
+              axialSize);
+      }
 
-	   mapSize       += newKeys;
-	   overallMaxHits = std::max(overallMaxHits, localMaxHits);
+      // Apply Gaussian smoothing to ringComponentVector AFTER all solidCyl files processed
+      std::cout << "\n--- SMOOTHING ---" << std::endl;
+      if (axialSigma > 0.0) {
+          std::cout << "Applying Gaussian smoothing to ringComponentVector (sigma=" << axialSigma << ")..." << std::endl;
+          ringComponentVector = gaussianSmoothVector(ringComponentVector, axialSigma, 1);
+      } else {
+          std::cout << "Axial smoothing disabled (sigma=0)" << std::endl;
+      }
 
-	   std::cout
-	     << "Processed “" << fn << "”"
-	     << "  →  total keys="  << mapSize
-	     << ", maxHits="       << overallMaxHits
-	     << "\n";
+      // Compute mean for block correction using smoothed values
+      meanRingComponentVector = geometricMeanVector(ringComponentVector);
+      std::cout << "Smoothed ringComponentVector geometric mean: " << meanRingComponentVector << std::endl;
 
-	   //We compute these values here so we can use them for the corrections for the annular source
-	   //Using geometric mean to reduce sensitivity to skewed distributions and outliers
-	   if (fn.find("solidCyl")!=std::string::npos){
-	   meanRingComponentVector = geometricMeanVector(ringComponentVector);
-	   meanRingsComponentMatrix = geometricMeanMatrix(ringsComponentMatrix);
+      // Pass 2: Build geometric matrix from ALL solidCyl files using smoothed block correction
+      std::cout << "\n--- PASS 2: Building geometric matrix ---\n" << std::endl;
+      for (const auto &solidCylFile : solidCylFiles) {
+          processSolidCyl_GeomMatrix(
+              solidCylFile,
+              ringsComponentMatrix,
+              ringComponentVector,  // Now smoothed!
+              meanRingComponentVector,
+              totalEvents,
+              nRsectorsAngPos,
+              nModulesTransaxial,
+              nModulesAxial,
+              nSubmodulesTransaxial,
+              nSubmodulesAxial,
+              nCrystalsTransaxial,
+              nCrystalsAxial,
+              nLayers,
+              crystalDepth,
+              transAxialSize,
+              axialSize);
+      }
 
-	   // Diagnostic output for 3D fan-sum counter
-	   std::cout << "=== 3D Fan-Sum Counter Statistics ===" << std::endl;
-	   std::cout << "  Min fan count: " << fanSumCounter.getMinFanCount() << std::endl;
-	   std::cout << "  Max fan count: " << fanSumCounter.getMaxFanCount() << std::endl;
-	   std::cout << "  Global average fan: " << fanSumCounter.getGlobalAverageFan() << std::endl;
-	   std::cout << "  Poissonian error (min): " << 1.0/std::sqrt(static_cast<double>(fanSumCounter.getMinFanCount())) << std::endl;
-	   }
+      // Compute geometric mean of ringsComponentMatrix
+      meanRingsComponentMatrix = geometricMeanMatrix(ringsComponentMatrix);
 
-	   if (fn.find("annular")!=std::string::npos){
-		   meanRadialComponentVector = geometricMeanVector(radialComponentVector);
-		   meanBlockTrAComponentMatrix = geometricMeanMatrix(blockTrAComponentMatrix);
-	   }
-
+      // Diagnostic output for 3D fan-sum counter
+      std::cout << "\n=== 3D Fan-Sum Counter Statistics ===" << std::endl;
+      std::cout << "  Min fan count: " << fanSumCounter.getMinFanCount() << std::endl;
+      std::cout << "  Max fan count: " << fanSumCounter.getMaxFanCount() << std::endl;
+      std::cout << "  Global average fan: " << fanSumCounter.getGlobalAverageFan() << std::endl;
+      std::cout << "  Poissonian error (min): " << 1.0/std::sqrt(static_cast<double>(fanSumCounter.getMinFanCount())) << std::endl;
+  } else {
+      std::cerr << "Warning: No solidCyl file found in input files!" << std::endl;
   }
+
+  // === ANNULAR PROCESSING ===
+  if (!annularFiles.empty()) {
+      std::cout << "\n========================================" << std::endl;
+      std::cout << "ANNULAR SOURCE PROCESSING" << std::endl;
+      std::cout << "  Found " << annularFiles.size() << " annular file(s)" << std::endl;
+      std::cout << "========================================\n" << std::endl;
+
+      // Process ALL annular files
+      for (const auto &annularFile : annularFiles) {
+          processAnnular(
+              annularFile,
+              blockTrAComponentMatrix,
+              radialComponentVector,
+              ringComponentVector,
+              meanRingComponentVector,
+              ringsComponentMatrix,
+              meanRingsComponentMatrix,
+              fanSumCounter,
+              totalEvents,
+              nRsectorsAngPos,
+              nModulesTransaxial,
+              nModulesAxial,
+              nSubmodulesTransaxial,
+              nSubmodulesAxial,
+              nCrystalsTransaxial,
+              nCrystalsAxial,
+              nLayers,
+              myPhantom,
+              emptyPhantom,
+              crystalDepth,
+              transAxialSize,
+              axialSize);
+      }
+
+      // Apply Gaussian smoothing to radialComponentVector AFTER all annular files processed
+      if (transaxialSigma > 0.0) {
+          std::cout << "\nApplying Gaussian smoothing to radialComponentVector (sigma=" << transaxialSigma << ")..." << std::endl;
+          radialComponentVector = gaussianSmoothVector(radialComponentVector, transaxialSigma, 2);
+      } else {
+          std::cout << "\nTransaxial smoothing disabled (sigma=0)" << std::endl;
+      }
+
+      meanRadialComponentVector = geometricMeanVector(radialComponentVector);
+      meanBlockTrAComponentMatrix = geometricMeanMatrix(blockTrAComponentMatrix);
+  } else {
+      std::cerr << "Warning: No annular file found in input files!" << std::endl;
+  }
+
+  std::cout << "\n========================================" << std::endl;
+  std::cout << "FILE PROCESSING COMPLETE" << std::endl;
+  std::cout << "  Total events processed: " << totalEvents << std::endl;
+  std::cout << "========================================\n" << std::endl;
 
 
 
@@ -1744,7 +1822,55 @@ double geometricMeanMatrix(const std::vector<std::vector<double>>& M)
   return count ? static_cast<double>(std::exp(logSum / static_cast<long double>(count))) : 1.0;
 }
 
+// Gaussian smoothing for axial normalization vectors to reduce sawtooth rippling
+// Uses boundary-aware kernel that properly handles edges
+std::vector<double> gaussianSmoothVector(const std::vector<double>& v, double sigma, int kernelHalfWidth)
+{
+  const int n = static_cast<int>(v.size());
+  if (n == 0) return v;
 
+  std::vector<double> smoothed(n);
+
+  // Pre-compute Gaussian kernel weights
+  std::vector<double> kernel(2 * kernelHalfWidth + 1);
+  double kernelSum = 0.0;
+  for (int k = -kernelHalfWidth; k <= kernelHalfWidth; ++k) {
+    double w = std::exp(-0.5 * k * k / (sigma * sigma));
+    kernel[k + kernelHalfWidth] = w;
+    kernelSum += w;
+  }
+  // Normalize kernel
+  for (auto& w : kernel) {
+    w /= kernelSum;
+  }
+
+  // Apply smoothing with boundary handling
+  for (int i = 0; i < n; ++i) {
+    double sum = 0.0;
+    double weightSum = 0.0;
+
+    for (int k = -kernelHalfWidth; k <= kernelHalfWidth; ++k) {
+      int idx = i + k;
+      // Boundary handling: only include valid indices
+      if (idx >= 0 && idx < n) {
+        // Only include positive, finite values in smoothing
+        if (std::isfinite(v[idx]) && v[idx] > 0.0) {
+          double w = kernel[k + kernelHalfWidth];
+          sum += w * v[idx];
+          weightSum += w;
+        }
+      }
+    }
+
+    // Preserve original value if no valid neighbors, otherwise use smoothed value
+    smoothed[i] = (weightSum > 0.0) ? (sum / weightSum) : v[i];
+  }
+
+  std::cout << "Applied Gaussian smoothing with sigma=" << sigma
+            << ", kernelHalfWidth=" << kernelHalfWidth << " to vector of size " << n << std::endl;
+
+  return smoothed;
+}
 
 double scaledMeanMatrix(
     const std::vector<std::vector<double>>& mat,

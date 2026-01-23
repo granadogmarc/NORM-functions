@@ -39,6 +39,14 @@ void printUsage(const char* programName) {
               << "  -d, --outputDir <path>   Output directory (default: current directory)\n"
               << "  -j, --threads <N>        Number of OpenMP threads to use\n"
               << "                             (default: all available cores)\n"
+              << "  -as, --axial-sigma <value>\n"
+              << "                           Gaussian smoothing sigma for axial normalization\n"
+              << "                             (default: 0.6, reduces 3% ripple to ~1%)\n"
+              << "                             Set to 0 to disable smoothing\n"
+              << "  -ts, --transaxial-sigma <value>\n"
+              << "                           Gaussian smoothing sigma for transaxial normalization\n"
+              << "                             (default: 1.0, smooths central LOR artifacts)\n"
+              << "                             Set to 0 to disable smoothing\n"
               << "  -h, --help               Show this help message and exit\n\n"
               << "Examples:\n"
               << "  " << programName << " -s CM2L_1ring_system -i 'data/*.root' -o norm_output\n"
@@ -53,6 +61,8 @@ int main(int argc,char**argv) {
 	std::string outputMatrixFileName;
 	std::string outputDir;
 	int numThreads = 0;  // 0 means use default (all available)
+	double axialSigma = 0.6;       // Gaussian smoothing sigma for axial normalization
+	double transaxialSigma = 1.0;  // Gaussian smoothing sigma for transaxial normalization
 
 	if (argc == 1) {
 		printUsage(argv[0]);
@@ -103,6 +113,30 @@ int main(int argc,char**argv) {
 				numThreads = std::atoi(argv[++i]);
 				if (numThreads <= 0) {
 					std::cerr << "Error: invalid thread count. Must be a positive integer.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-as" || arg == "--axial-sigma") {
+			if (i + 1 < argc) {
+				axialSigma = std::atof(argv[++i]);
+				if (axialSigma < 0) {
+					std::cerr << "Error: axial sigma must be non-negative.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-ts" || arg == "--transaxial-sigma") {
+			if (i + 1 < argc) {
+				transaxialSigma = std::atof(argv[++i]);
+				if (transaxialSigma < 0) {
+					std::cerr << "Error: transaxial sigma must be non-negative.\n";
 					return 1;
 				}
 			} else {
@@ -285,6 +319,8 @@ else if (scannerName =="32x16x2_4rings_system"){
   	emptyPhantom.name =			"empty Cylinder";
 
   std::cout<<"About to enter compute norm functions"<<std::endl;
+  std::cout<<"Axial smoothing sigma: " << axialSigma << (axialSigma == 0 ? " (disabled)" : "") << std::endl;
+  std::cout<<"Transaxial smoothing sigma: " << transaxialSigma << (transaxialSigma == 0 ? " (disabled)" : "") << std::endl;
 
 
   computeNormalizationFactors(files,scannerName,outputDir,outputMatrixFileName,
@@ -308,7 +344,9 @@ else if (scannerName =="32x16x2_4rings_system"){
 		axialSize,
 		crystalDepth,
 	    detectorRadius,
-		  outputMatrixFileName+".csv");
+		  outputMatrixFileName+".csv",
+		  axialSigma,
+		  transaxialSigma);
 
   return 0;
 }

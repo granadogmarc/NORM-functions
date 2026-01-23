@@ -559,46 +559,81 @@ struct FanSumCounter {
 
 
 
-// forward declarations
-std::pair<size_t, size_t> processFile( const std::string &filename,
-                  //matrixLOR          &castorIDMatrix,
-				  //matrixSymFactors 			&symmetryMatrix,
-				  //matrixCrystalLOR 		&crystalLORMatrix,
-				  //matrixAxialGeometricFact &axialGeomFactMatrix,
-				  matrixRingsComponent		&ringsComponentMatrix,
-				  double					meanRingsComponentMatrix,
-				  matrixRingsComponent		&blockTrAComponentMatrix,
-				  double						meanBlockTrAComponentMatrix,
-				  vectorRadialComponent		&radialComponentVector,
-				  double					meanRingComponentVector,
-				  vectorRingComponent		&ringComponentVector,
-				  DetectorCounters &detectorEfficyCounts,
-				  FanSumCounter    &fanSumCounter,  // 3D fan-sum for intrinsic efficiency
-				  //RadialNormCounter	&radialNormCounts,
-				  //double 			&meanCrystalLORCounts,
-				  Long64_t			&usedLOR,
-				  Long64_t			&totalEvents,
-                  uint32_t          nRsectorsAngPos,
-                  uint32_t          nRsectorsAxial,
-                  bool              invertDetOrder,
-                  int               rsectorIdOrder,
-                  uint32_t          nModulesTransaxial,
-                  uint32_t          nModulesAxial,
-                  uint32_t          nSubmodulesTransaxial,
-                  uint32_t          nSubmodulesAxial,
-                  uint32_t          nCrystalsTransaxial,
-                  uint32_t          nCrystalsAxial,
-                  uint8_t           nLayers,
-                  uint32_t*   		nCrystalPerLayer,
-                  uint32_t          nLayersRptTransaxial,
-                  uint32_t          nLayersRptAxial,
-                  const Phantom    &myPhantom,
-                  const Phantom    &emptyPhantom,
-                                    float			crystalDepth,
-                                    float             detectorRadius,
-                                    float             transAxialSize,
-                                    float             axialSize
-                );
+//=============================================================================
+// Three-function processing for normalization:
+// 1. processSolidCyl_BlockCounts: Pass 1 - accumulate ring counts and fan-sum
+// 2. processSolidCyl_GeomMatrix:  Pass 2 - build geometric matrix with smoothed block correction
+// 3. processAnnular:              Build transaxial components using solidCyl results
+//=============================================================================
+
+// Pass 1: Accumulate ringComponentVector, fanSumCounter, and detector efficiency counts
+// Call this first with solidCyl data, then smooth ringComponentVector before Pass 2
+void processSolidCyl_BlockCounts(
+    const std::string &filename,
+    vectorRingComponent &ringComponentVector,
+    DetectorCounters &detectorEfficyCounts,
+    FanSumCounter &fanSumCounter,
+    Long64_t &totalEvents,
+    uint32_t nRsectorsAngPos,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t nLayers,
+    float crystalDepth,
+    float transAxialSize,
+    float axialSize
+);
+
+// Pass 2: Build ringsComponentMatrix using the (now smoothed) ringComponentVector
+// Call this after smoothing ringComponentVector
+void processSolidCyl_GeomMatrix(
+    const std::string &filename,
+    matrixRingsComponent &ringsComponentMatrix,
+    const vectorRingComponent &ringComponentVector,  // Should be smoothed before this call
+    double meanRingComponentVector,
+    Long64_t &totalEvents,
+    uint32_t nRsectorsAngPos,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t nLayers,
+    float crystalDepth,
+    float transAxialSize,
+    float axialSize
+);
+
+// Annular source processing: Build radialComponentVector and blockTrAComponentMatrix
+// Uses results from solidCyl processing (ringComponentVector, ringsComponentMatrix, fanSumCounter)
+void processAnnular(
+    const std::string &filename,
+    matrixRingsComponent &blockTrAComponentMatrix,
+    vectorRadialComponent &radialComponentVector,
+    const vectorRingComponent &ringComponentVector,
+    double meanRingComponentVector,
+    const matrixRingsComponent &ringsComponentMatrix,
+    double meanRingsComponentMatrix,
+    const FanSumCounter &fanSumCounter,
+    Long64_t &totalEvents,
+    uint32_t nRsectorsAngPos,
+    uint32_t nModulesTransaxial,
+    uint32_t nModulesAxial,
+    uint32_t nSubmodulesTransaxial,
+    uint32_t nSubmodulesAxial,
+    uint32_t nCrystalsTransaxial,
+    uint32_t nCrystalsAxial,
+    uint8_t nLayers,
+    const Phantom &myPhantom,
+    const Phantom &emptyPhantom,
+    float crystalDepth,
+    float transAxialSize,
+    float axialSize
+);
 
 
 
@@ -625,7 +660,9 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         float axialSize,
 		float	crystalDepth,
         float detectorRadius,
-        const std::string &outCSV
+        const std::string &outCSV,
+        double axialSigma = 0.6,      // Gaussian smoothing sigma for axial normalization (0 to disable)
+        double transaxialSigma = 1.0  // Gaussian smoothing sigma for transaxial normalization (0 to disable)
       );
 
 
@@ -779,6 +816,11 @@ double meanVector(const std::vector<double>& v);
 double meanMatrix(const std::vector<std::vector<double>>& M);
 double geometricMeanVector(const std::vector<double>& v);
 double geometricMeanMatrix(const std::vector<std::vector<double>>& M);
+
+// Gaussian smoothing for axial normalization vectors to reduce sawtooth rippling
+// sigma: standard deviation in bins (typically 1.0-2.0)
+// kernelHalfWidth: number of bins on each side of center (typically 2-3)
+std::vector<double> gaussianSmoothVector(const std::vector<double>& v, double sigma = 1.5, int kernelHalfWidth = 3);
 
 double scaledMeanMatrix(const std::vector<std::vector<double>>& mat,const std::vector<double>& weights);
 inline std::ofstream openCSV(const std::string& filename);
