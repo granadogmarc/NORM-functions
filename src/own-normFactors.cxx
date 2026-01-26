@@ -41,12 +41,12 @@ void printUsage(const char* programName) {
               << "                             (default: all available cores)\n"
               << "  -as, --axial-sigma <value>\n"
               << "                           Gaussian smoothing sigma for axial normalization\n"
-              << "                             (default: 0.6, reduces 3% ripple to ~1%)\n"
-              << "                             Set to 0 to disable smoothing\n"
+              << "                             (default: 0 = disabled)\n"
+              << "                             Recommended: 0.6 to reduce sawtooth ripple\n"
               << "  -ts, --transaxial-sigma <value>\n"
               << "                           Gaussian smoothing sigma for transaxial normalization\n"
-              << "                             (default: 1.0, smooths central LOR artifacts)\n"
-              << "                             Set to 0 to disable smoothing\n"
+              << "                             (default: 0 = disabled)\n"
+              << "                             Recommended: 1.0 for central LOR smoothing\n"
               << "  -h, --help               Show this help message and exit\n\n"
               << "Examples:\n"
               << "  " << programName << " -s CM2L_1ring_system -i 'data/*.root' -o norm_output\n"
@@ -61,8 +61,8 @@ int main(int argc,char**argv) {
 	std::string outputMatrixFileName;
 	std::string outputDir;
 	int numThreads = 0;  // 0 means use default (all available)
-	double axialSigma = 0.6;       // Gaussian smoothing sigma for axial normalization
-	double transaxialSigma = 1.0;  // Gaussian smoothing sigma for transaxial normalization
+	double axialSigma = 0.0;       // Gaussian smoothing sigma for axial normalization (0 = disabled by default)
+	double transaxialSigma = 0.0;  // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
 
 	if (argc == 1) {
 		printUsage(argv[0]);

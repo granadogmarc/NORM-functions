@@ -661,8 +661,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 		float	crystalDepth,
         float detectorRadius,
         const std::string &outCSV,
-        double axialSigma = 0.6,      // Gaussian smoothing sigma for axial normalization (0 to disable)
-        double transaxialSigma = 1.0  // Gaussian smoothing sigma for transaxial normalization (0 to disable)
+        double axialSigma = 0.0,      // Gaussian smoothing sigma for axial normalization (0 = disabled by default)
+        double transaxialSigma = 0.0  // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
       );
 
 

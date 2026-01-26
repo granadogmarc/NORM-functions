@@ -692,6 +692,12 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
           radialComponentVector = gaussianSmoothVector(radialComponentVector, transaxialSigma, 2);
       } else {
           std::cout << "\nTransaxial smoothing disabled (sigma=0)" << std::endl;
+          // Replace r=0 bin with r=1 to avoid low-statistics artifacts
+          if (radialComponentVector.size() > 1) {
+              std::cout << "  Replacing r=0 bin (value=" << radialComponentVector[0]
+                        << ") with r=1 bin (value=" << radialComponentVector[1] << ")" << std::endl;
+              radialComponentVector[0] = radialComponentVector[1];
+          }
       }
 
       meanRadialComponentVector = geometricMeanVector(radialComponentVector);
