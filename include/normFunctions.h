@@ -614,6 +614,7 @@ void processAnnular(
     const std::string &filename,
     matrixRingsComponent &blockTrAComponentMatrix,
     vectorRadialComponent &radialComponentVector,
+    std::vector<float> &minPhysicalR,  // Track min physical R (mm) per radialID bin
     const vectorRingComponent &ringComponentVector,
     double meanRingComponentVector,
     const matrixRingsComponent &ringsComponentMatrix,

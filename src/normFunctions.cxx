@@ -240,6 +240,7 @@ void processAnnular(
     const std::string &filename,
     matrixRingsComponent &blockTrAComponentMatrix,
     vectorRadialComponent &radialComponentVector,
+    std::vector<float> &minPhysicalR,  // Track min physical R (mm) per radialID bin
     const vectorRingComponent &ringComponentVector,
     double meanRingComponentVector,
     const matrixRingsComponent &ringsComponentMatrix,
@@ -403,6 +404,11 @@ void processAnnular(
 
         radialComponentVector[radialID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
         blockTrAComponentMatrix[radialID][trAID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
+
+        // Track minimum physical R for this radialID bin
+        if (mySinogram.R < minPhysicalR[radialID]) {
+            minPhysicalR[radialID] = mySinogram.R;
+        }
     }
 
     file->Close();
@@ -527,6 +533,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	matrixRingsComponent		ringsComponentMatrix(maxRingID, std::vector<double>(maxRingID));
   matrixRingsComponent		blockTrAComponentMatrix(maxRadialID,std::vector<double>(maxTrAID));
   vectorRadialComponent		radialComponentVector(maxRadialID,0.0);
+  std::vector<float>      minPhysicalR(maxRadialID, std::numeric_limits<float>::max());  // Track min physical R per bin
 	vectorRingComponent			ringComponentVector(maxRingID,0.0);
 
 	DetectorCounters detectorEfficyCounts(nSubmodulesTransaxial*nSubmodulesAxial, nCrystalsTransaxial*nCrystalsAxial,nLayers);
@@ -615,7 +622,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
       // Compute mean for block correction using smoothed values
       meanRingComponentVector = geometricMeanVector(ringComponentVector);
-      std::cout << "Smoothed ringComponentVector geometric mean: " << meanRingComponentVector << std::endl;
+      std::cout << "RingComponentVector geometric mean: " << meanRingComponentVector << std::endl;
 
       // Pass 2: Build geometric matrix from ALL solidCyl files using smoothed block correction
       std::cout << "\n--- PASS 2: Building geometric matrix ---\n" << std::endl;
@@ -665,6 +672,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               annularFile,
               blockTrAComponentMatrix,
               radialComponentVector,
+              minPhysicalR,
               ringComponentVector,
               meanRingComponentVector,
               ringsComponentMatrix,
@@ -692,11 +700,31 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
           radialComponentVector = gaussianSmoothVector(radialComponentVector, transaxialSigma, 2);
       } else {
           std::cout << "\nTransaxial smoothing disabled (sigma=0)" << std::endl;
-          // Replace r=0 bin with r=1 to avoid low-statistics artifacts
-          if (radialComponentVector.size() > 1) {
-              std::cout << "  Replacing r=0 bin (value=" << radialComponentVector[0]
-                        << ") with r=1 bin (value=" << radialComponentVector[1] << ")" << std::endl;
-              radialComponentVector[0] = radialComponentVector[1];
+          // Find first non-zero bin and fill all leading zeros with that value
+          // This handles LORs that are physically impossible due to detector geometry
+          size_t firstNonZero = 0;
+          while (firstNonZero < radialComponentVector.size() && radialComponentVector[firstNonZero] == 0.0) {
+              ++firstNonZero;
+          }
+          if (firstNonZero > 0 && firstNonZero < radialComponentVector.size()) {
+              std::cout << "  Found " << firstNonZero << " leading zero bins (r=0 to r=" << (firstNonZero-1) << ")" << std::endl;
+              std::cout << "  First non-zero bin: radialID=" << firstNonZero
+                        << ", value=" << radialComponentVector[firstNonZero]
+                        << ", min physical R=" << minPhysicalR[firstNonZero] << " mm" << std::endl;
+
+              // Show the mapping for the first few non-zero bins
+              std::cout << "  Radial bin to physical R mapping (from actual events):" << std::endl;
+              size_t showUntil = std::min(firstNonZero + 5, radialComponentVector.size());
+              for (size_t i = firstNonZero; i < showUntil; ++i) {
+                  if (minPhysicalR[i] < std::numeric_limits<float>::max()) {
+                      std::cout << "    radialID=" << i << " -> min R=" << minPhysicalR[i] << " mm" << std::endl;
+                  }
+              }
+
+              std::cout << "  Filling zero bins with value from bin " << firstNonZero << std::endl;
+              for (size_t i = 0; i < firstNonZero; ++i) {
+                  radialComponentVector[i] = radialComponentVector[firstNonZero];
+              }
           }
       }
 
