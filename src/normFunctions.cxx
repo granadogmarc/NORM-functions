@@ -3,6 +3,7 @@
 #include <cmath>
 #include <numeric>
 #include <iostream>
+#include <iomanip>
 #include <glob.h>
 #include <omp.h>
 
@@ -211,7 +212,7 @@ void processSolidCyl_GeomMatrix(
         Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
         // FILTER for the FIELD OF VIEW
-        if (mySinogram.R > 300) continue;
+        if (std::fabs(mySinogram.R) > 300) continue;
 
         int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
         int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
@@ -312,7 +313,7 @@ void processAnnular(
         Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
         // FILTER for the FIELD OF VIEW
-        if (mySinogram.R > 300) continue;
+        if (std::fabs(mySinogram.R) > 300) continue;
 
         float lineIntegral = ComputePhantomLineIntegral(gPos1, gPos2, myPhantom, 1, 1);
         float emptyIntegral = ComputePhantomLineIntegral(gPos1, gPos2, emptyPhantom, 1, 1);
@@ -405,9 +406,10 @@ void processAnnular(
         radialComponentVector[radialID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
         blockTrAComponentMatrix[radialID][trAID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
 
-        // Track minimum physical R for this radialID bin
-        if (mySinogram.R < minPhysicalR[radialID]) {
-            minPhysicalR[radialID] = mySinogram.R;
+        // Track minimum physical |R| for this radialID bin
+        float absR = std::fabs(mySinogram.R);
+        if (absR < minPhysicalR[radialID]) {
+            minPhysicalR[radialID] = absR;
         }
     }
 
@@ -700,31 +702,14 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
           radialComponentVector = gaussianSmoothVector(radialComponentVector, transaxialSigma, 2);
       } else {
           std::cout << "\nTransaxial smoothing disabled (sigma=0)" << std::endl;
-          // Find first non-zero bin and fill all leading zeros with that value
-          // This handles LORs that are physically impossible due to detector geometry
-          size_t firstNonZero = 0;
-          while (firstNonZero < radialComponentVector.size() && radialComponentVector[firstNonZero] == 0.0) {
-              ++firstNonZero;
-          }
-          if (firstNonZero > 0 && firstNonZero < radialComponentVector.size()) {
-              std::cout << "  Found " << firstNonZero << " leading zero bins (r=0 to r=" << (firstNonZero-1) << ")" << std::endl;
-              std::cout << "  First non-zero bin: radialID=" << firstNonZero
-                        << ", value=" << radialComponentVector[firstNonZero]
-                        << ", min physical R=" << minPhysicalR[firstNonZero] << " mm" << std::endl;
-
-              // Show the mapping for the first few non-zero bins
-              std::cout << "  Radial bin to physical R mapping (from actual events):" << std::endl;
-              size_t showUntil = std::min(firstNonZero + 5, radialComponentVector.size());
-              for (size_t i = firstNonZero; i < showUntil; ++i) {
-                  if (minPhysicalR[i] < std::numeric_limits<float>::max()) {
-                      std::cout << "    radialID=" << i << " -> min R=" << minPhysicalR[i] << " mm" << std::endl;
-                  }
-              }
-
-              std::cout << "  Filling zero bins with value from bin " << firstNonZero << std::endl;
-              for (size_t i = 0; i < firstNonZero; ++i) {
-                  radialComponentVector[i] = radialComponentVector[firstNonZero];
-              }
+          // Replace the last bin with the second-to-last bin value
+          // The last bin (r = maxRadialID - 1) corresponds to LORs through the center
+          // which have low statistics and cause artifacts
+          size_t lastIdx = radialComponentVector.size() - 1;
+          if (lastIdx > 0 && radialComponentVector[lastIdx] == 0.0) {
+              std::cout << "  Last bin (radialID=" << lastIdx << ") is zero, replacing with bin " << (lastIdx - 1)
+                        << " (value=" << radialComponentVector[lastIdx - 1] << ")" << std::endl;
+              radialComponentVector[lastIdx] = radialComponentVector[lastIdx - 1];
           }
       }
 
