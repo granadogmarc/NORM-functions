@@ -32,6 +32,7 @@ void printUsage(const char* programName) {
               << "                             16x16x2_1ring_system\n"
               << "                             16x16x2_4rings_system\n"
               << "                             32x16x2_4rings_system\n"
+	      << "                             32x32x2_4rings_system\n"
               << "  -i, --input <pattern>    Input ROOT file path or glob pattern\n"
               << "                             (use quotes for wildcards: 'path/*.root')\n"
               << "  -o, --outputFile <name>  Output file name (without extension)\n\n"
@@ -254,6 +255,24 @@ else if (scannerName =="32x16x2_4rings_system"){
   nLayersRptAxial = 1;
 
  }
+
+
+else if (scannerName =="32x32x2_4rings_system"){
+
+  nRsectorsAngPos = 32;
+  nRsectorsAxial = 1;
+  nModulesTransaxial = 1;
+  nModulesAxial = 4;
+  nSubmodulesTransaxial = 1;
+  nSubmodulesAxial = 32;
+  nCrystalsTransaxial = 32;
+  nCrystalsAxial = 1;
+  nLayers = 2;
+  nLayersRptTransaxial = 1;
+  nLayersRptAxial = 1;
+
+ }
+
 
 
  else{ std::cerr << "Error: no system provided from the expected list\n";
