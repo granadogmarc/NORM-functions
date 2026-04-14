@@ -31,6 +31,45 @@ static inline TransaxialStrides makeTransaxialStrides(uint32_t nModulesTransaxia
   return s;
 }
 
+// Extract the axial component of rsectorID (depends on repeater ordering)
+static inline int rsectorAxlComponent(int rsectorID, int rsectorIdOrder,
+                                      int nRsectorsAngPos, int nRsectorsAxial) {
+  return (rsectorIdOrder == 0) ? rsectorID / nRsectorsAngPos   // transaxial-first
+                               : rsectorID % nRsectorsAxial;   // axial-first
+}
+
+// Extract the transaxial component of rsectorID (depends on repeater ordering)
+static inline int rsectorTrsComponent(int rsectorID, int rsectorIdOrder,
+                                      int nRsectorsAngPos, int /*nRsectorsAxial*/) {
+  return (rsectorIdOrder == 0) ? rsectorID % nRsectorsAngPos   // transaxial-first
+                               : rsectorID / nRsectorsAngPos;  // axial-first (/ nRsectorsAxial, but kept symmetric)
+}
+
+// Compute the ring (axial) index from all component IDs.
+// Consistent with ConvertIDcylindrical / ReverseCastorID.
+static inline int computeRingID(int rsectorAxl,
+                                int moduleID, int submoduleID, int crystalID,
+                                int nModulesAxial, int nSubmodulesAxial, int nCrystalsAxial,
+                                int nModulesTransaxial, int nSubmodulesTransaxial,
+                                int nCrystalsTransaxial) {
+  return rsectorAxl * (nModulesAxial * nSubmodulesAxial * nCrystalsAxial)
+       + (moduleID    / nModulesTransaxial)    * (nSubmodulesAxial * nCrystalsAxial)
+       + (submoduleID / nSubmodulesTransaxial) *  nCrystalsAxial
+       + (crystalID   / nCrystalsTransaxial);
+}
+
+// Compute the transaxial crystal index from all component IDs.
+// Used for fan-sum lookup; excludes the axial parts of combined IDs.
+static inline int computeTransaxialID(int rsectorTrs,
+                                      int moduleID, int submoduleID, int crystalID,
+                                      int nModulesTransaxial, int nSubmodulesTransaxial,
+                                      int nCrystalsTransaxial) {
+  return rsectorTrs * (nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial)
+       + (moduleID    % nModulesTransaxial)    * (nSubmodulesTransaxial * nCrystalsTransaxial)
+       + (submoduleID % nSubmodulesTransaxial) *  nCrystalsTransaxial
+       + (crystalID   % nCrystalsTransaxial);
+}
+
 
 //=============================================================================
 // processSolidCyl_BlockCounts: Pass 1 - accumulate ring counts and fan-sum
@@ -43,6 +82,8 @@ void processSolidCyl_BlockCounts(
     FanSumCounter &fanSumCounter,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    int      rsectorIdOrder,
     uint32_t nModulesTransaxial,
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
@@ -101,32 +142,33 @@ void processSolidCyl_BlockCounts(
         detectorEfficyCounts.addLayerCount(layerID2);
 
         // 3D Fan-Sum: Accumulate counts per crystal (ring, transaxial)
-        int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
-        int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
+        int rsectorAxl1 = rsectorAxlComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+        int rsectorAxl2 = rsectorAxlComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+        int rsectorTrs1 = rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+        int rsectorTrs2 = rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
 
-        // Compute transaxial position (excluding layers)
-        int strideCrystalTr = 1;
-        int strideSubmoduleTr = nCrystalsTransaxial;
-        int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
-        int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
+        int ringID1 = computeRingID(rsectorAxl1, moduleID1, submoduleID1, crystalID1,
+                                    nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+        int ringID2 = computeRingID(rsectorAxl2, moduleID2, submoduleID2, crystalID2,
+                                    nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
-        int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
-                          + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
-                          + (moduleID1 % nModulesTransaxial) * strideModuleTr
-                          + rsectorID1 * strideRsectorTr;
-
-        int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
-                          + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
-                          + (moduleID2 % nModulesTransaxial) * strideModuleTr
-                          + rsectorID2 * strideRsectorTr;
+        int transaxialID1 = computeTransaxialID(rsectorTrs1, moduleID1, submoduleID1, crystalID1,
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+        int transaxialID2 = computeTransaxialID(rsectorTrs2, moduleID2, submoduleID2, crystalID2,
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
         // Add counts to both crystals involved in this coincidence
         fanSumCounter.addCount(ringID1, transaxialID1);
         fanSumCounter.addCount(ringID2, transaxialID2);
 
-        // Accumulate axial block component (intra-ring coincidences)
-        if (moduleID1 == moduleID2 && submoduleID1 == submoduleID2) {
-            ringComponentVector[moduleID1 + nModulesAxial * submoduleID1] += 1;
+        // Accumulate axial block component: count coincidences within the same detector block
+        // Two detectors are in the same block when all axial sub-indices match
+        if (rsectorAxl1 == rsectorAxl2
+            && (moduleID1    / nModulesTransaxial)    == (moduleID2    / nModulesTransaxial)
+            && (submoduleID1 / nSubmodulesTransaxial) == (submoduleID2 / nSubmodulesTransaxial)) {
+            ringComponentVector[ringID1] += 1;
         }
     }
 
@@ -152,6 +194,8 @@ void processSolidCyl_GeomMatrix(
     double meanRingComponentVector,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    int      rsectorIdOrder,
     uint32_t nModulesTransaxial,
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
@@ -214,8 +258,16 @@ void processSolidCyl_GeomMatrix(
         // FILTER for the FIELD OF VIEW
         if (std::fabs(mySinogram.R) > 300) continue;
 
-        int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
-        int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
+        int ringID1 = computeRingID(
+            rsectorAxlComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+            moduleID1, submoduleID1, crystalID1,
+            nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+            nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+        int ringID2 = computeRingID(
+            rsectorAxlComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+            moduleID2, submoduleID2, crystalID2,
+            nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+            nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
         // Guard against zero ring counts
         if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
@@ -249,6 +301,8 @@ void processAnnular(
     const FanSumCounter &fanSumCounter,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    int      rsectorIdOrder,
     uint32_t nModulesTransaxial,
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
@@ -323,8 +377,17 @@ void processAnnular(
             continue;
         }
 
-        int ringID1 = moduleID1 + nModulesAxial * submoduleID1;
-        int ringID2 = moduleID2 + nModulesAxial * submoduleID2;
+        int rsectorAxl1 = rsectorAxlComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+        int rsectorAxl2 = rsectorAxlComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+        int rsectorTrs1 = rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+        int rsectorTrs2 = rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial);
+
+        int ringID1 = computeRingID(rsectorAxl1, moduleID1, submoduleID1, crystalID1,
+                                    nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+        int ringID2 = computeRingID(rsectorAxl2, moduleID2, submoduleID2, crystalID2,
+                                    nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
         // Guard against zero ring counts or zero matrix entries
         if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
@@ -366,8 +429,8 @@ void processAnnular(
 
         int trAID = ringPosID1;
 
-        ringPosID1 += rsectorID1 * strideRsector;
-        ringPosID2 += rsectorID2 * strideRsector;
+        ringPosID1 += rsectorTrs1 * strideRsector;
+        ringPosID2 += rsectorTrs2 * strideRsector;
 
         int totalTransaxial = nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
 
@@ -385,20 +448,10 @@ void processAnnular(
         }
 
         // 3D Fan-Sum Efficiency
-        int strideCrystalTr = 1;
-        int strideSubmoduleTr = nCrystalsTransaxial;
-        int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
-        int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
-
-        int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
-                          + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
-                          + (moduleID1 % nModulesTransaxial) * strideModuleTr
-                          + rsectorID1 * strideRsectorTr;
-
-        int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
-                          + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
-                          + (moduleID2 % nModulesTransaxial) * strideModuleTr
-                          + rsectorID2 * strideRsectorTr;
+        int transaxialID1 = computeTransaxialID(rsectorTrs1, moduleID1, submoduleID1, crystalID1,
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+        int transaxialID2 = computeTransaxialID(rsectorTrs2, moduleID2, submoduleID2, crystalID2,
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
         double effNormFactor = fanSumCounter.getEfficiencyFactor(
             ringID1, transaxialID1, ringID2, transaxialID2);
@@ -525,7 +578,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	if (nLayers>1) transaxialElements +=1;
 
 	int maxSymID = maxCastorID*maxCastorID/(nRsectorsAngPos * nRsectorsAxial);
-	int maxRingID	= nModulesAxial*nSubmodulesAxial*nCrystalsAxial;
+	int maxRingID	= nRsectorsAxial*nModulesAxial*nSubmodulesAxial*nCrystalsAxial;
 
 	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
 	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
@@ -541,9 +594,9 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 	DetectorCounters detectorEfficyCounts(nSubmodulesTransaxial*nSubmodulesAxial, nCrystalsTransaxial*nCrystalsAxial,nLayers);
 
 	// 3D Fan-Sum Counter for intrinsic detector efficiency (Pepin et al. 2011)
-	// Ring dimension: nModulesAxial * nSubmodulesAxial (axial positions)
+	// Ring dimension: full axial crystal count (consistent with maxRingID)
 	// Transaxial dimension: nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial
-	uint32_t nFanSumRings = nModulesAxial * nSubmodulesAxial;
+	uint32_t nFanSumRings = nRsectorsAxial * nModulesAxial * nSubmodulesAxial * nCrystalsAxial;
 	uint32_t nFanSumTransaxial = nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
 	FanSumCounter fanSumCounter(nFanSumRings, nFanSumTransaxial);
 
@@ -601,6 +654,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               fanSumCounter,
               totalEvents,
               nRsectorsAngPos,
+              nRsectorsAxial,
+              rsectorIdOrder,
               nModulesTransaxial,
               nModulesAxial,
               nSubmodulesTransaxial,
@@ -636,6 +691,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               meanRingComponentVector,
               totalEvents,
               nRsectorsAngPos,
+              nRsectorsAxial,
+              rsectorIdOrder,
               nModulesTransaxial,
               nModulesAxial,
               nSubmodulesTransaxial,
@@ -682,6 +739,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               fanSumCounter,
               totalEvents,
               nRsectorsAngPos,
+              nRsectorsAxial,
+              rsectorIdOrder,
               nModulesTransaxial,
               nModulesAxial,
               nSubmodulesTransaxial,
@@ -857,29 +916,24 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  int ringPosID2 = 0;
 
 										  if (nModulesTransaxial > 1){
-											  ringPosID1 += moduleID1*strideModule;
-										  	  ringPosID2 += moduleID2*strideModule;
+											  ringPosID1 += (moduleID1 % nModulesTransaxial) * strideModule;
+										  	  ringPosID2 += (moduleID2 % nModulesTransaxial) * strideModule;
 										  }
 										  if(nSubmodulesTransaxial > 1){
-										  	  ringPosID1 += submoduleID1 * strideSubmodule;
-										  	  ringPosID2 += submoduleID2 * strideSubmodule;
+										  	  ringPosID1 += (submoduleID1 % nSubmodulesTransaxial) * strideSubmodule;
+										  	  ringPosID2 += (submoduleID2 % nSubmodulesTransaxial) * strideSubmodule;
 										  }
 										  if (nCrystalsTransaxial > 1){
-											  ringPosID1 += crystalID1 * strideCrystal;
-										  	  ringPosID2 += crystalID2 * strideCrystal;
+											  ringPosID1 += (crystalID1 % nCrystalsTransaxial) * strideCrystal;
+										  	  ringPosID2 += (crystalID2 % nCrystalsTransaxial) * strideCrystal;
 									  	  }
 
-										  /*
-                       if (nLayers > 1){
-											  ringPosID1 += layerID1 * strideLayer;
-										  	  ringPosID2 += layerID2 * strideLayer;
-									  }*/
 										  //Since the radialID is computed as the difference between the two ringPosID,
 										  //the ringPosID1 before adding the rsector value already defines the intra
 										  //block position for each radialID:
 										  int trAID = ringPosID1;
-										  ringPosID1 += rsectorID1 * strideRsector;
-										  ringPosID2 += rsectorID2 * strideRsector;
+										  ringPosID1 += rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial) * strideRsector;
+										  ringPosID2 += rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial) * strideRsector;
 
 										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;// *nLayers; 18D removign nlayersfrom transaxial
 
@@ -917,8 +971,16 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  }
 
 
-										  int ringID1 = moduleID1+nModulesAxial*submoduleID1; //TODO generalise it for all geometric cases
-										  int ringID2 = moduleID2+nModulesAxial*submoduleID2; //TODO generalise it for all geometric cases
+                      int ringID1 = computeRingID(
+                          rsectorAxlComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+                          moduleID1, submoduleID1, crystalID1,
+                          nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                      int ringID2 = computeRingID(
+                          rsectorAxlComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+                          moduleID2, submoduleID2, crystalID2,
+                          nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
 										  double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
 										  double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
@@ -928,20 +990,14 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 										  // Replaces the old per-component efficiency calculation
 										  //=================================================================
 										  // Compute transaxial positions for fan-sum lookup (excluding layers)
-										  int strideCrystalTr = 1;
-										  int strideSubmoduleTr = nCrystalsTransaxial;
-										  int strideModuleTr = nCrystalsTransaxial * nSubmodulesTransaxial;
-										  int strideRsectorTr = nCrystalsTransaxial * nSubmodulesTransaxial * nModulesTransaxial;
-
-										  int transaxialID1 = (crystalID1 % nCrystalsTransaxial) * strideCrystalTr
-										                    + (submoduleID1 % nSubmodulesTransaxial) * strideSubmoduleTr
-										                    + (moduleID1 % nModulesTransaxial) * strideModuleTr
-										                    + rsectorID1 * strideRsectorTr;
-
-										  int transaxialID2 = (crystalID2 % nCrystalsTransaxial) * strideCrystalTr
-										                    + (submoduleID2 % nSubmodulesTransaxial) * strideSubmoduleTr
-										                    + (moduleID2 % nModulesTransaxial) * strideModuleTr
-										                    + rsectorID2 * strideRsectorTr;
+                      int transaxialID1 = computeTransaxialID(
+                          rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+                          moduleID1, submoduleID1, crystalID1,
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                      int transaxialID2 = computeTransaxialID(
+                          rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+                          moduleID2, submoduleID2, crystalID2,
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
 
 										  // Get fan-sum based efficiency factor
 										  double effNormFactor = fanSumCounter.getEfficiencyFactor(
@@ -1696,6 +1752,138 @@ Sinogram ConvertToSinogram(TVector3& gPos1, TVector3& gPos2) {
 }
 
 
+//=============================================================================
+// ParseScannerXML: Parse scanner configuration from XML file
+// Uses ROOT's TXMLEngine for XML parsing
+//=============================================================================
+ScannerConfig ParseScannerXML(const std::string& filename) {
+    ScannerConfig config;
+
+    TXMLEngine xml;
+    XMLDocPointer_t xmldoc = xml.ParseFile(filename.c_str());
+
+    if (!xmldoc) {
+        std::cerr << "Error: Cannot parse XML file: " << filename << std::endl;
+        return config;
+    }
+
+    XMLNodePointer_t mainnode = xml.DocGetRootElement(xmldoc);
+    if (!mainnode) {
+        std::cerr << "Error: Empty XML document: " << filename << std::endl;
+        xml.FreeDoc(xmldoc);
+        return config;
+    }
+
+    // Get scanner name from root element attribute
+    const char* nameAttr = xml.GetAttr(mainnode, "name");
+    if (nameAttr) {
+        config.name = nameAttr;
+    }
+
+    // Helper lambda to get integer value from a child node
+    auto getIntChild = [&xml](XMLNodePointer_t parent, const char* childName) -> int {
+        XMLNodePointer_t child = xml.GetChild(parent);
+        while (child) {
+            if (std::string(xml.GetNodeName(child)) == childName) {
+                const char* content = xml.GetNodeContent(child);
+                return content ? std::atoi(content) : 0;
+            }
+            child = xml.GetNext(child);
+        }
+        return 0;
+    };
+
+    // Helper lambda to get float value from a child node
+    auto getFloatChild = [&xml](XMLNodePointer_t parent, const char* childName) -> float {
+        XMLNodePointer_t child = xml.GetChild(parent);
+        while (child) {
+            if (std::string(xml.GetNodeName(child)) == childName) {
+                const char* content = xml.GetNodeContent(child);
+                return content ? static_cast<float>(std::atof(content)) : 0.0f;
+            }
+            child = xml.GetNext(child);
+        }
+        return 0.0f;
+    };
+
+    // Helper lambda to get bool value from a child node
+    auto getBoolChild = [&xml](XMLNodePointer_t parent, const char* childName) -> bool {
+        XMLNodePointer_t child = xml.GetChild(parent);
+        while (child) {
+            if (std::string(xml.GetNodeName(child)) == childName) {
+                const char* content = xml.GetNodeContent(child);
+                if (content) {
+                    std::string val(content);
+                    return (val == "true" || val == "1" || val == "yes");
+                }
+                return false;
+            }
+            child = xml.GetNext(child);
+        }
+        return false;
+    };
+
+    // Iterate through child nodes of root element
+    XMLNodePointer_t child = xml.GetChild(mainnode);
+    while (child) {
+        std::string nodeName = xml.GetNodeName(child);
+
+        if (nodeName == "geometry") {
+            config.nRsectorsAngPos = static_cast<uint32_t>(getIntChild(child, "nRsectorsAngPos"));
+            config.nRsectorsAxial = static_cast<uint32_t>(getIntChild(child, "nRsectorsAxial"));
+            config.nModulesTransaxial = static_cast<uint32_t>(getIntChild(child, "nModulesTransaxial"));
+            config.nModulesAxial = static_cast<uint32_t>(getIntChild(child, "nModulesAxial"));
+            config.nSubmodulesTransaxial = static_cast<uint32_t>(getIntChild(child, "nSubmodulesTransaxial"));
+            config.nSubmodulesAxial = static_cast<uint32_t>(getIntChild(child, "nSubmodulesAxial"));
+            config.nCrystalsTransaxial = static_cast<uint32_t>(getIntChild(child, "nCrystalsTransaxial"));
+            config.nCrystalsAxial = static_cast<uint32_t>(getIntChild(child, "nCrystalsAxial"));
+            config.nLayers = static_cast<uint8_t>(getIntChild(child, "nLayers"));
+            config.nLayersRptTransaxial = static_cast<uint32_t>(getIntChild(child, "nLayersRptTransaxial"));
+            config.nLayersRptAxial = static_cast<uint32_t>(getIntChild(child, "nLayersRptAxial"));
+            config.invertDetOrder = getBoolChild(child, "invertDetOrder");
+            config.rsectorIdOrder = getIntChild(child, "rsectorIdOrder");
+
+            // Set defaults if not specified
+            if (config.nLayersRptTransaxial == 0) config.nLayersRptTransaxial = 1;
+            if (config.nLayersRptAxial == 0) config.nLayersRptAxial = 1;
+        }
+        else if (nodeName == "physical") {
+            config.crystalDepth = getFloatChild(child, "crystalDepth");
+            config.axialSize = getFloatChild(child, "axialSize");
+            config.transAxialSize = getFloatChild(child, "transAxialSize");
+            config.detectorRadius = getFloatChild(child, "detectorRadius");
+
+            // Set defaults if not specified
+            if (config.crystalDepth <= 0) config.crystalDepth = 10.0f;
+            if (config.axialSize <= 0) config.axialSize = 59.0f;
+            if (config.transAxialSize <= 0) config.transAxialSize = 59.0f;
+            if (config.detectorRadius <= 0) config.detectorRadius = 321.3f;
+        }
+
+        child = xml.GetNext(child);
+    }
+
+    xml.FreeDoc(xmldoc);
+
+    // Compute nCrystalPerLayer
+    config.computeCrystalPerLayer();
+
+    std::cout << "Loaded scanner configuration from XML: " << filename << std::endl;
+    std::cout << "  Scanner name: " << config.name << std::endl;
+    std::cout << "  nRsectorsAngPos: " << config.nRsectorsAngPos << std::endl;
+    std::cout << "  nRsectorsAxial: " << config.nRsectorsAxial << std::endl;
+    std::cout << "  nModulesTransaxial: " << config.nModulesTransaxial << std::endl;
+    std::cout << "  nModulesAxial: " << config.nModulesAxial << std::endl;
+    std::cout << "  nSubmodulesTransaxial: " << config.nSubmodulesTransaxial << std::endl;
+    std::cout << "  nSubmodulesAxial: " << config.nSubmodulesAxial << std::endl;
+    std::cout << "  nCrystalsTransaxial: " << config.nCrystalsTransaxial << std::endl;
+    std::cout << "  nCrystalsAxial: " << config.nCrystalsAxial << std::endl;
+    std::cout << "  nLayers: " << static_cast<int>(config.nLayers) << std::endl;
+    std::cout << "  crystalDepth: " << config.crystalDepth << " mm" << std::endl;
+    std::cout << "  detectorRadius: " << config.detectorRadius << " mm" << std::endl;
+
+    return config;
+}
 
 
 std::vector<std::string> expandWildcard(const std::string &pattern) {

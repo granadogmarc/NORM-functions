@@ -27,11 +27,7 @@ void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
               << "PET normalization factors computation utility.\n\n"
               << "Required arguments:\n"
-              << "  -s, --system <name>      Scanner system name. Available systems:\n"
-              << "                             CM2L_1ring_system\n"
-              << "                             16x16x2_1ring_system\n"
-              << "                             16x16x2_4rings_system\n"
-              << "                             32x16x2_4rings_system\n"
+              << "  -x, --xml <path>         Scanner configuration XML file\n"
               << "  -i, --input <pattern>    Input ROOT file path or glob pattern\n"
               << "                             (use quotes for wildcards: 'path/*.root')\n"
               << "  -o, --outputFile <name>  Output file name (without extension)\n\n"
@@ -49,14 +45,14 @@ void printUsage(const char* programName) {
               << "                             Recommended: 1.0 for central LOR smoothing\n"
               << "  -h, --help               Show this help message and exit\n\n"
               << "Examples:\n"
-              << "  " << programName << " -s CM2L_1ring_system -i 'data/*.root' -o norm_output\n"
-              << "  " << programName << " -s 16x16x2_4rings_system -i data.root -o out -j 4\n";
+              << "  " << programName << " -x scanners/CM2L_1ring.xml -i 'data/*.root' -o norm_output\n"
+              << "  " << programName << " -x scanners/16x16x2_4rings.xml -i data.root -o out -j 4\n";
 }
 
 
 int main(int argc,char**argv) {
 
-	std::string scannerName;
+	std::string xmlConfigFile;
 	std::string pattern;
 	std::string outputMatrixFileName;
 	std::string outputDir;
@@ -76,9 +72,9 @@ int main(int argc,char**argv) {
 			printUsage(argv[0]);
 			return 0;
 		}
-		else if (arg == "-s" || arg == "--system") {
+		else if (arg == "-x" || arg == "--xml") {
 			if (i + 1 < argc) {
-				scannerName = argv[++i];
+				xmlConfigFile = argv[++i];
 			} else {
 				std::cerr << "Error: missing argument after " << arg << "\n";
 				return 1;
@@ -160,6 +156,19 @@ int main(int argc,char**argv) {
 	}
 
 
+  // Load scanner configuration from XML file first (fail-fast on config errors)
+  if (xmlConfigFile.empty()) {
+      std::cerr << "Error: XML configuration file is required (-x/--xml)\n";
+      printUsage(argv[0]);
+      return 1;
+  }
+
+  ScannerConfig config = ParseScannerXML(xmlConfigFile);
+  if (config.name.empty()) {
+      std::cerr << "Error: Failed to load scanner configuration from: " << xmlConfigFile << "\n";
+      return 1;
+  }
+
 	std::cout<<"outDir = "<<outputDir<<" fileName "<<outputMatrixFileName<<std::endl;
   	  std::cout<<"pattern is "<< pattern<<std::endl;
       std::vector<std::string> files = expandWildcard(pattern);
@@ -175,98 +184,8 @@ int main(int argc,char**argv) {
       }
       std::cout << "Total number of files: " << files.size() << "\n";
 
-
-  // 2) Precompute how many unique castorIDs we expect:
-
-
-  bool invertDetOrder = false;
-  int rsectorIdOrder = 0;
-
-
-  uint32_t nRsectorsAngPos, nRsectorsAxial;
-
-  uint32_t nModulesTransaxial, nModulesAxial;
-  uint32_t nSubmodulesTransaxial, nSubmodulesAxial;
-  uint32_t nCrystalsTransaxial, nCrystalsAxial;
-  uint8_t nLayers;
-  uint32_t nLayersRptTransaxial, nLayersRptAxial;
-  double axialSize = 59; // in mm
-  double transAxialSize = 59; // in mm
-  double depth = 10; // in mm	
-  // Define system parameters based on scannerName
-
- if (scannerName=="CM2L_1ring_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 1;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 32;
-  nCrystalsTransaxial = 32;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
- else if (scannerName =="16x16x2_1ring_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 1;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 16;
-  nCrystalsTransaxial = 16;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
-
- else if (scannerName =="16x16x2_4rings_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 4;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 16;
-  nCrystalsTransaxial = 16;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
-
-else if (scannerName =="32x16x2_4rings_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 4;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 32;
-  nCrystalsTransaxial = 16;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
-
- }
-
-
- else{ std::cerr << "Error: no system provided from the expected list\n";
- return 1;}
-
-
- float		crystalDepth = 10. ;// in mm
- float		detectorRadius = 321.3 + crystalDepth/nLayers*0.5 + 0.5; //in mm //Here I add half a millimeter to ensure there is no drama with the projection caused by two different lenths
-
- uint32_t nCrystalPerLayer[nLayers] = {nRsectorsAngPos * nRsectorsAxial *nModulesTransaxial * nModulesAxial *nSubmodulesTransaxial * nSubmodulesAxial
-		 	 	 	 	 	 	 	 	 * nCrystalsTransaxial * nCrystalsAxial *nLayersRptTransaxial,
-										nRsectorsAngPos * nRsectorsAxial *nModulesTransaxial * nModulesAxial *nSubmodulesTransaxial * nSubmodulesAxial
-										* nCrystalsTransaxial * nCrystalsAxial *nLayersRptTransaxial};//All of them
+  // Compute effective detector radius (add half crystal depth offset)
+  float effectiveDetectorRadius = config.detectorRadius + config.crystalDepth / config.nLayers * 0.5f + 0.5f;
 
 
   Phantom myPhantom;
@@ -322,31 +241,33 @@ else if (scannerName =="32x16x2_4rings_system"){
   std::cout<<"Axial smoothing sigma: " << axialSigma << (axialSigma == 0 ? " (disabled)" : "") << std::endl;
   std::cout<<"Transaxial smoothing sigma: " << transaxialSigma << (transaxialSigma == 0 ? " (disabled)" : "") << std::endl;
 
+  // Create nCrystalPerLayer array from config
+  std::vector<uint32_t> nCrystalPerLayerVec = config.nCrystalPerLayer;
 
-  computeNormalizationFactors(files,scannerName,outputDir,outputMatrixFileName,
-          nRsectorsAngPos,
-          nRsectorsAxial,
-          invertDetOrder,
-          rsectorIdOrder,
-          nModulesTransaxial,
-          nModulesAxial,
-          nSubmodulesTransaxial,
-          nSubmodulesAxial,
-          nCrystalsTransaxial,
-          nCrystalsAxial,
-          nLayers,
-          nCrystalPerLayer,
-          nLayersRptTransaxial,
-          nLayersRptAxial,
+  computeNormalizationFactors(files, config.name, outputDir, outputMatrixFileName,
+          config.nRsectorsAngPos,
+          config.nRsectorsAxial,
+          config.invertDetOrder,
+          config.rsectorIdOrder,
+          config.nModulesTransaxial,
+          config.nModulesAxial,
+          config.nSubmodulesTransaxial,
+          config.nSubmodulesAxial,
+          config.nCrystalsTransaxial,
+          config.nCrystalsAxial,
+          config.nLayers,
+          nCrystalPerLayerVec.data(),
+          config.nLayersRptTransaxial,
+          config.nLayersRptAxial,
           myPhantom,
           emptyPhantom,
-		transAxialSize,
-		axialSize,
-		crystalDepth,
-	    detectorRadius,
-		  outputMatrixFileName+".csv",
-		  axialSigma,
-		  transaxialSigma);
+          config.transAxialSize,
+          config.axialSize,
+          config.crystalDepth,
+          effectiveDetectorRadius,
+          outputMatrixFileName+".csv",
+          axialSigma,
+          transaxialSigma);
 
   return 0;
 }

@@ -21,6 +21,7 @@ find_package(ROOT REQUIRED COMPONENTS
   Graf
   Gpad
   Physics
+  XMLIO
 )
 
 # --------------------------------------------------
@@ -46,5 +47,17 @@ target_link_libraries(own-normFactors
     ROOT::Graf
     ROOT::Gpad
     ROOT::Physics
+    ROOT::XMLIO
     OpenMP::OpenMP_CXX
 )
+
+# --------------------------------------------------
+# Tests (no ROOT dependency)
+# --------------------------------------------------
+enable_testing()
+
+add_executable(test_indexing_32x16x2
+  tests/test_indexing_32x16x2.cxx
+)
+target_compile_options(test_indexing_32x16x2 PRIVATE -Wall -Wextra)
+add_test(NAME indexing_32x16x2 COMMAND test_indexing_32x16x2)

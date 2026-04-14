@@ -31,6 +31,7 @@
 #include <unordered_map>
 #include <utility>
 #include <limits>
+#include "TXMLEngine.h"
 
 typedef float Float_t;
 
@@ -575,6 +576,8 @@ void processSolidCyl_BlockCounts(
     FanSumCounter &fanSumCounter,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    int      rsectorIdOrder,
     uint32_t nModulesTransaxial,
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
@@ -596,6 +599,8 @@ void processSolidCyl_GeomMatrix(
     double meanRingComponentVector,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    int      rsectorIdOrder,
     uint32_t nModulesTransaxial,
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
@@ -622,6 +627,8 @@ void processAnnular(
     const FanSumCounter &fanSumCounter,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
+    uint32_t nRsectorsAxial,
+    int      rsectorIdOrder,
     uint32_t nModulesTransaxial,
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
@@ -668,6 +675,10 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 struct ScannerConfig {
+    // Scanner name
+    std::string name;
+
+    // Geometry parameters
     uint32_t nRsectorsAngPos = 0;
     uint32_t nRsectorsAxial = 0;
     bool invertDetOrder = false;
@@ -683,7 +694,27 @@ struct ScannerConfig {
     std::vector<uint32_t> nCrystalPerLayer;
     uint32_t nLayersRptTransaxial = 1;
     uint32_t nLayersRptAxial = 1;
+
+    // Physical parameters
+    float crystalDepth = 10.0f;      // in mm
+    float axialSize = 59.0f;         // in mm
+    float transAxialSize = 59.0f;    // in mm
+    float detectorRadius = 321.3f;   // in mm
+
+    // Compute nCrystalPerLayer based on geometry
+    void computeCrystalPerLayer() {
+        uint32_t totalCrystalsPerLayer =
+            nRsectorsAngPos * nRsectorsAxial *
+            nModulesTransaxial * nModulesAxial *
+            nSubmodulesTransaxial * nSubmodulesAxial *
+            nCrystalsTransaxial * nCrystalsAxial *
+            nLayersRptTransaxial;
+        nCrystalPerLayer.assign(nLayers, totalCrystalsPerLayer);
+    }
 };
+
+// Parse scanner configuration from XML file using ROOT's TXMLEngine
+ScannerConfig ParseScannerXML(const std::string& filename);
 
 inline ScannerConfig ParseGeomFile(const std::string& filename) {
     ScannerConfig config;
