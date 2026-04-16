@@ -28,6 +28,7 @@ void printUsage(const char* programName) {
               << "PET normalization factors computation utility.\n\n"
               << "Required arguments:\n"
               << "  -x, --xml <path>         Scanner configuration XML file\n"
+
               << "  -i, --input <pattern>    Input ROOT file path or glob pattern\n"
               << "                             (use quotes for wildcards: 'path/*.root')\n"
               << "  -o, --outputFile <name>  Output file name (without extension)\n\n"
@@ -186,6 +187,7 @@ int main(int argc,char**argv) {
 
   // Compute effective detector radius (add half crystal depth offset)
   float effectiveDetectorRadius = config.detectorRadius + config.crystalDepth / config.nLayers * 0.5f + 0.5f;
+
 
 
   Phantom myPhantom;
