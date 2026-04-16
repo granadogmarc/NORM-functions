@@ -447,6 +447,11 @@ void processAnnular(
             continue;
         }
 
+        // The last bin (delta == totalTransaxial/2) has no folding partner: only one orientation
+        // maps to it, while all other bins receive contributions from two delta values (delta=k and
+        // delta=totalTransaxial-k). Apply a factor of 2 to restore equivalent statistical weight.
+        double foldingWeight = (delta == totalTransaxial / 2) ? 2.0 : 1.0;
+
         // 3D Fan-Sum Efficiency
         int transaxialID1 = computeTransaxialID(rsectorTrs1, moduleID1, submoduleID1, crystalID1,
                                                 nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
@@ -456,8 +461,9 @@ void processAnnular(
         double effNormFactor = fanSumCounter.getEfficiencyFactor(
             ringID1, transaxialID1, ringID2, transaxialID2);
 
-        radialComponentVector[radialID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
-        blockTrAComponentMatrix[radialID][trAID] += blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
+        double contribution = foldingWeight * blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
+        radialComponentVector[radialID] += contribution;
+        blockTrAComponentMatrix[radialID][trAID] += contribution;
 
         // Track minimum physical |R| for this radialID bin
         float absR = std::fabs(mySinogram.R);
@@ -761,15 +767,6 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
           radialComponentVector = gaussianSmoothVector(radialComponentVector, transaxialSigma, 2);
       } else {
           std::cout << "\nTransaxial smoothing disabled (sigma=0)" << std::endl;
-          // Replace the last bin with the second-to-last bin value
-          // The last bin (r = maxRadialID - 1) corresponds to LORs through the center
-          // which have low statistics and cause artifacts
-          size_t lastIdx = radialComponentVector.size() - 1;
-          if (lastIdx > 0 && radialComponentVector[lastIdx] == 0.0) {
-              std::cout << "  Last bin (radialID=" << lastIdx << ") is zero, replacing with bin " << (lastIdx - 1)
-                        << " (value=" << radialComponentVector[lastIdx - 1] << ")" << std::endl;
-              radialComponentVector[lastIdx] = radialComponentVector[lastIdx - 1];
-          }
       }
 
       meanRadialComponentVector = geometricMeanVector(radialComponentVector);
@@ -958,11 +955,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
                       int radialID = std::min(delta, totalTransaxial - delta)-1;
 										  // Safety: ensure radialID stays within bounds
 										  // (expected size is totalTransaxial/2)
-										  if (radialID < 0 || radialID > totalTransaxial*0.5) {
+										  if (radialID < 0 || radialID >= totalTransaxial/2) {
 										      std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
-										  }
-										  else if(radialID == totalTransaxial*0.5-1){
-											  radialID = totalTransaxial*0.5-2; //Attempt to try to repair the wierd last bin effect.
 										  }
 										  if (trAID < 0 || trAID >= maxTrAID) {
 										      std::cerr << "BAD trAID = " << trAID
