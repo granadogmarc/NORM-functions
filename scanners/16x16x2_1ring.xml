@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scanner name="16x16x2_1ring_system">
+    <geometry>
+        <nRsectorsAngPos>32</nRsectorsAngPos>
+        <nRsectorsAxial>1</nRsectorsAxial>
+        <nModulesTransaxial>1</nModulesTransaxial>
+        <nModulesAxial>1</nModulesAxial>
+        <nSubmodulesTransaxial>1</nSubmodulesTransaxial>
+        <nSubmodulesAxial>16</nSubmodulesAxial>
+        <nCrystalsTransaxial>16</nCrystalsTransaxial>
+        <nCrystalsAxial>1</nCrystalsAxial>
+        <nLayers>2</nLayers>
+        <nLayersRptTransaxial>1</nLayersRptTransaxial>
+        <nLayersRptAxial>1</nLayersRptAxial>
+        <invertDetOrder>false</invertDetOrder>
+        <rsectorIdOrder>0</rsectorIdOrder>
+    </geometry>
+    <physical>
+        <crystalDepth>10.0</crystalDepth>
+        <axialSize>59.0</axialSize>
+        <transAxialSize>59.0</transAxialSize>
+        <detectorRadius>321.3</detectorRadius>
+    </physical>
+</scanner>

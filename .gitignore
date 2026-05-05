@@ -7,15 +7,21 @@ Makefile
 
 # Binaries
 own-normFactors
+test_reverse_castorid
+
+#TESTS
+test_reverse_castorid.cpp
 
 # ROOT
 *.root
 
 #Claude readme
 NORMALISATION_NOTES.md
-
 # OS junk
 .DS_Store
 
 # Editor
 *~
+# ignore itself
+.gitignore
+
