@@ -31,7 +31,7 @@
 #include <unordered_map>
 #include <utility>
 #include <limits>
-#include "TXMLEngine.h"
+#include "scannerGeometry.h"
 
 typedef float Float_t;
 
@@ -584,10 +584,7 @@ void processSolidCyl_BlockCounts(
     uint32_t nSubmodulesAxial,
     uint32_t nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
-    uint8_t nLayers,
-    float crystalDepth,
-    float transAxialSize,
-    float axialSize
+    uint8_t nLayers
 );
 
 // Pass 2: Build ringsComponentMatrix using the (now smoothed) ringComponentVector
@@ -608,9 +605,7 @@ void processSolidCyl_GeomMatrix(
     uint32_t nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t nLayers,
-    float crystalDepth,
-    float transAxialSize,
-    float axialSize
+    const ScannerGeometry &geom
 );
 
 // Annular source processing: Build radialComponentVector and blockTrAComponentMatrix
@@ -638,9 +633,7 @@ void processAnnular(
     uint8_t nLayers,
     const Phantom &myPhantom,
     const Phantom &emptyPhantom,
-    float crystalDepth,
-    float transAxialSize,
-    float axialSize
+    const ScannerGeometry &geom
 );
 
 
@@ -664,123 +657,21 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         uint32_t nLayersRptAxial,
         const Phantom &myPhantom,
         const Phantom &emptyPhantom,
-        float transAxialSize,
-        float axialSize,
-		float	crystalDepth,
-        float detectorRadius,
+        const ScannerGeometry &geom,   // geometry read from the CASToR scanner file
         const std::string &outCSV,
         double axialSigma = 0.0,      // Gaussian smoothing sigma for axial normalization (0 = disabled by default)
         double transaxialSigma = 0.0  // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
       );
 
 
-struct ScannerConfig {
-    // Scanner name
-    std::string name;
-
-    // Geometry parameters
-    uint32_t nRsectorsAngPos = 0;
-    uint32_t nRsectorsAxial = 0;
-    bool invertDetOrder = false;
-    int rsectorIdOrder = 0;
-    int lyr_rpt_flag = 1;
-    uint32_t nModulesTransaxial = 0;
-    uint32_t nModulesAxial = 0;
-    uint32_t nSubmodulesTransaxial = 0;
-    uint32_t nSubmodulesAxial = 0;
-    uint32_t nCrystalsTransaxial = 0;
-    uint32_t nCrystalsAxial = 0;
-    uint8_t nLayers = 0;
-    std::vector<uint32_t> nCrystalPerLayer;
-    uint32_t nLayersRptTransaxial = 1;
-    uint32_t nLayersRptAxial = 1;
-
-    // Physical parameters
-    float crystalDepth = 10.0f;      // in mm
-    float axialSize = 59.0f;         // in mm
-    float transAxialSize = 59.0f;    // in mm
-    float detectorRadius = 321.3f;   // in mm
-
-    // Compute nCrystalPerLayer based on geometry
-    void computeCrystalPerLayer() {
-        uint32_t totalCrystalsPerLayer =
-            nRsectorsAngPos * nRsectorsAxial *
-            nModulesTransaxial * nModulesAxial *
-            nSubmodulesTransaxial * nSubmodulesAxial *
-            nCrystalsTransaxial * nCrystalsAxial *
-            nLayersRptTransaxial;
-        nCrystalPerLayer.assign(nLayers, totalCrystalsPerLayer);
-    }
-};
-
-// Parse scanner configuration from XML file using ROOT's TXMLEngine
-ScannerConfig ParseScannerXML(const std::string& filename);
-
-inline ScannerConfig ParseGeomFile(const std::string& filename) {
-    ScannerConfig config;
-    std::ifstream file(filename);
-    std::string line;
-
-    while (std::getline(file, line)) {
-        std::istringstream iss(line);
-        std::string label;
-        std::getline(iss, label, ':');
-        std::string values_str;
-        std::getline(iss, values_str);
-
-        std::istringstream vss(values_str);
-        std::vector<uint32_t> values;
-        uint32_t val;
-        while (vss >> val) values.push_back(val);
-
-        if (label.find("number of layers") != std::string::npos) {
-            config.nLayers = static_cast<uint8_t>(values[0]);
-        } else if (label.find("number of rsectors") != std::string::npos && label.find("axial") == std::string::npos) {
-            config.nRsectorsAngPos = values[0];
-        } else if (label.find("number of rsectors axial") != std::string::npos) {
-            config.nRsectorsAxial = values[0];
-        } else if (label.find("number of modules transaxial") != std::string::npos) {
-            config.nModulesTransaxial = values[0];
-        } else if (label.find("number of modules axial") != std::string::npos) {
-            config.nModulesAxial = values[0];
-        } else if (label.find("number of submodules transaxial") != std::string::npos) {
-            config.nSubmodulesTransaxial = values[0];
-        } else if (label.find("number of submodules axial") != std::string::npos) {
-            config.nSubmodulesAxial = values[0];
-        } else if (label.find("number of crystals transaxial") != std::string::npos) {
-            config.nCrystalsTransaxial = values[0];
-        } else if (label.find("number of crystals axial") != std::string::npos) {
-            config.nCrystalsAxial = values[0];
-        }
-    }
-
-    // Compute nCrystalPerLayer
-    uint32_t totalCrystalsPerLayer =
-        config.nModulesTransaxial * config.nModulesAxial *
-        config.nSubmodulesTransaxial * config.nSubmodulesAxial *
-        config.nCrystalsTransaxial * config.nCrystalsAxial *
-        config.nRsectorsAngPos;
-
-    config.nCrystalPerLayer.assign(config.nLayers, totalCrystalsPerLayer);
-
-    return config;
-}
-
-
-
 TVector3 applyRotation(const TVector3& pos, double angle) ;
 
-TVector3 convertToPosition(double x0, double y0, double z0,
-                           double deltaPhi,
+// Centre of a crystal as a TVector3, from the geometry read in the CASToR scanner file.
+// IDs are the ones stored in the GATE Coincidences tree (see ScannerGeometry::crystalPosition).
+TVector3 convertToPosition(const ScannerGeometry &geom,
                            int layerID, int crystalID,
                            int submoduleID, int moduleID,
-                           int rsectorID,
-                           float crystalDepth,
-                           float transAxialSize,
-                           float axialSize,
-                           uint8_t nLayers,
-                           uint32_t nCrystalsTransaxial,
-                           uint32_t nSubmodulesAxial);
+                           int rsectorID);
 
 uint32_t ReducedID(uint32_t nRsectorsAngPos,
                           uint32_t nRsectorsAxial,

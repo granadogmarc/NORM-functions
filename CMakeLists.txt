@@ -21,7 +21,6 @@ find_package(ROOT REQUIRED COMPONENTS
   Graf
   Gpad
   Physics
-  XMLIO
 )
 
 # --------------------------------------------------
@@ -30,6 +29,7 @@ find_package(ROOT REQUIRED COMPONENTS
 add_executable(own-normFactors
   src/own-normFactors.cxx
   src/normFunctions.cxx
+  src/scannerGeometry.cxx
 )
 
 target_include_directories(own-normFactors
@@ -47,7 +47,6 @@ target_link_libraries(own-normFactors
     ROOT::Graf
     ROOT::Gpad
     ROOT::Physics
-    ROOT::XMLIO
     OpenMP::OpenMP_CXX
 )
 
@@ -56,8 +55,22 @@ target_link_libraries(own-normFactors
 # --------------------------------------------------
 enable_testing()
 
-add_executable(test_indexing_32x16x2
-  tests/test_indexing_32x16x2.cxx
+# CASToR .geom parser and crystal positions (reads the files in scanners/)
+add_executable(test_scanner_geometry
+  tests/test_scanner_geometry.cxx
+  src/scannerGeometry.cxx
 )
-target_compile_options(test_indexing_32x16x2 PRIVATE -Wall -Wextra)
-add_test(NAME indexing_32x16x2 COMMAND test_indexing_32x16x2)
+target_include_directories(test_scanner_geometry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(test_scanner_geometry PRIVATE
+  SCANNER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/scanners")
+target_compile_options(test_scanner_geometry PRIVATE -Wall -Wextra)
+add_test(NAME scanner_geometry COMMAND test_scanner_geometry)
+
+# Only built when the source file is present in the checkout
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_indexing_32x16x2.cxx)
+  add_executable(test_indexing_32x16x2
+    tests/test_indexing_32x16x2.cxx
+  )
+  target_compile_options(test_indexing_32x16x2 PRIVATE -Wall -Wextra)
+  add_test(NAME indexing_32x16x2 COMMAND test_indexing_32x16x2)
+endif()

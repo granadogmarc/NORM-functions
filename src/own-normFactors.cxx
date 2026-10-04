@@ -27,7 +27,8 @@ void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
               << "PET normalization factors computation utility.\n\n"
               << "Required arguments:\n"
-              << "  -x, --xml <path>         Scanner configuration XML file\n"
+              << "  -g, --geom <path>        Scanner file in the CASToR cylindrical PET format (.geom),\n"
+              << "                             see scanners/ for examples\n"
 
               << "  -i, --input <pattern>    Input ROOT file path or glob pattern\n"
               << "                             (use quotes for wildcards: 'path/*.root')\n"
@@ -44,16 +45,22 @@ void printUsage(const char* programName) {
               << "                           Gaussian smoothing sigma for transaxial normalization\n"
               << "                             (default: 0 = disabled)\n"
               << "                             Recommended: 1.0 for central LOR smoothing\n"
+              << "  --invert-det-order       Transaxial detector order is reversed in GATE\n"
+              << "                             (not part of the CASToR scanner file; default: off)\n"
+              << "  --rsector-id-order <0|1> Rsector ID ordering: 0 = transaxial-first (default),\n"
+              << "                             1 = axial-first (cubic array)\n"
               << "  -h, --help               Show this help message and exit\n\n"
               << "Examples:\n"
-              << "  " << programName << " -x scanners/CM2L_1ring.xml -i 'data/*.root' -o norm_output\n"
-              << "  " << programName << " -x scanners/16x16x2_4rings.xml -i data.root -o out -j 4\n";
+              << "  " << programName << " -g scanners/CM2L_1ring.geom -i 'data/*.root' -o norm_output\n"
+              << "  " << programName << " -g scanners/16x16x2_4rings.geom -i data.root -o out -j 4\n";
 }
 
 
 int main(int argc,char**argv) {
 
-	std::string xmlConfigFile;
+	std::string geomFile;
+	bool invertDetOrder = false;   // not in the CASToR scanner file
+	int rsectorIdOrder = 0;        // not in the CASToR scanner file
 	std::string pattern;
 	std::string outputMatrixFileName;
 	std::string outputDir;
@@ -73,9 +80,24 @@ int main(int argc,char**argv) {
 			printUsage(argv[0]);
 			return 0;
 		}
-		else if (arg == "-x" || arg == "--xml") {
+		else if (arg == "-g" || arg == "--geom") {
 			if (i + 1 < argc) {
-				xmlConfigFile = argv[++i];
+				geomFile = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "--invert-det-order") {
+			invertDetOrder = true;
+		}
+		else if (arg == "--rsector-id-order") {
+			if (i + 1 < argc) {
+				rsectorIdOrder = std::atoi(argv[++i]);
+				if (rsectorIdOrder != 0 && rsectorIdOrder != 1) {
+					std::cerr << "Error: --rsector-id-order must be 0 or 1.\n";
+					return 1;
+				}
 			} else {
 				std::cerr << "Error: missing argument after " << arg << "\n";
 				return 1;
@@ -157,18 +179,23 @@ int main(int argc,char**argv) {
 	}
 
 
-  // Load scanner configuration from XML file first (fail-fast on config errors)
-  if (xmlConfigFile.empty()) {
-      std::cerr << "Error: XML configuration file is required (-x/--xml)\n";
+  // Load the scanner file (CASToR .geom) first (fail-fast on config errors)
+  if (geomFile.empty()) {
+      std::cerr << "Error: scanner file is required (-g/--geom)\n";
       printUsage(argv[0]);
       return 1;
   }
 
-  ScannerConfig config = ParseScannerXML(xmlConfigFile);
-  if (config.name.empty()) {
-      std::cerr << "Error: Failed to load scanner configuration from: " << xmlConfigFile << "\n";
-      return 1;
+  ScannerGeometry geom;
+  {
+      std::string geomError;
+      if (!ParseCastorGeom(geomFile, geom, geomError)) {
+          std::cerr << "Error: cannot use scanner file " << geomFile << ": " << geomError << "\n";
+          return 1;
+      }
   }
+  std::cout << "Loaded scanner file: " << geomFile << std::endl;
+  geom.print(std::cout);
 
 	std::cout<<"outDir = "<<outputDir<<" fileName "<<outputMatrixFileName<<std::endl;
   	  std::cout<<"pattern is "<< pattern<<std::endl;
@@ -184,9 +211,6 @@ int main(int argc,char**argv) {
           std::cout << "  [" << i << "] " << files[i] << "\n";
       }
       std::cout << "Total number of files: " << files.size() << "\n";
-
-  // Compute effective detector radius (add half crystal depth offset)
-  float effectiveDetectorRadius = config.detectorRadius + config.crystalDepth / config.nLayers * 0.5f + 0.5f;
 
 
 
@@ -243,30 +267,32 @@ int main(int argc,char**argv) {
   std::cout<<"Axial smoothing sigma: " << axialSigma << (axialSigma == 0 ? " (disabled)" : "") << std::endl;
   std::cout<<"Transaxial smoothing sigma: " << transaxialSigma << (transaxialSigma == 0 ? " (disabled)" : "") << std::endl;
 
-  // Create nCrystalPerLayer array from config
-  std::vector<uint32_t> nCrystalPerLayerVec = config.nCrystalPerLayer;
+  // Number of crystals per layer (same for every layer, see ScannerGeometry)
+  const uint32_t totalCrystalsPerLayer =
+      geom.nRsectorsAngPos * geom.nRsectorsAxial *
+      geom.nModulesTransaxial * geom.nModulesAxial *
+      geom.nSubmodulesTransaxial * geom.nSubmodulesAxial *
+      geom.nCrystalsTransaxial * geom.nCrystalsAxial;
+  std::vector<uint32_t> nCrystalPerLayerVec(geom.nLayers, totalCrystalsPerLayer);
 
-  computeNormalizationFactors(files, config.name, outputDir, outputMatrixFileName,
-          config.nRsectorsAngPos,
-          config.nRsectorsAxial,
-          config.invertDetOrder,
-          config.rsectorIdOrder,
-          config.nModulesTransaxial,
-          config.nModulesAxial,
-          config.nSubmodulesTransaxial,
-          config.nSubmodulesAxial,
-          config.nCrystalsTransaxial,
-          config.nCrystalsAxial,
-          config.nLayers,
+  computeNormalizationFactors(files, geom.name, outputDir, outputMatrixFileName,
+          geom.nRsectorsAngPos,
+          geom.nRsectorsAxial,
+          invertDetOrder,
+          rsectorIdOrder,
+          geom.nModulesTransaxial,
+          geom.nModulesAxial,
+          geom.nSubmodulesTransaxial,
+          geom.nSubmodulesAxial,
+          geom.nCrystalsTransaxial,
+          geom.nCrystalsAxial,
+          static_cast<uint8_t>(geom.nLayers),
           nCrystalPerLayerVec.data(),
-          config.nLayersRptTransaxial,
-          config.nLayersRptAxial,
+          1,   // nLayersRptTransaxial
+          1,   // nLayersRptAxial
           myPhantom,
           emptyPhantom,
-          config.transAxialSize,
-          config.axialSize,
-          config.crystalDepth,
-          effectiveDetectorRadius,
+          geom,
           outputMatrixFileName+".csv",
           axialSigma,
           transaxialSigma);

@@ -90,10 +90,7 @@ void processSolidCyl_BlockCounts(
     uint32_t nSubmodulesAxial,
     uint32_t nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
-    uint8_t nLayers,
-    float crystalDepth,
-    float transAxialSize,
-    float axialSize)
+    uint8_t nLayers)
 {
     TFile *file = TFile::Open(filename.c_str());
     if (!file || file->IsZombie()) {
@@ -203,9 +200,7 @@ void processSolidCyl_GeomMatrix(
     uint32_t nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t nLayers,
-    float crystalDepth,
-    float transAxialSize,
-    float axialSize)
+    const ScannerGeometry &geom)
 {
     TFile *file = TFile::Open(filename.c_str());
     if (!file || file->IsZombie()) {
@@ -237,8 +232,6 @@ void processSolidCyl_GeomMatrix(
     Long64_t nEvents = Coincidences->GetEntries();
     // Don't add to totalEvents again - already counted in Pass 1
 
-    double PI = 3.14159265358979323846;
-
     std::cout << "=== Pass 2: Building geometric matrix from " << filename << " ===" << std::endl;
     std::cout << "  Using smoothed ringComponentVector (mean=" << meanRingComponentVector << ")" << std::endl;
     std::cout << "  Processing " << nEvents << " events..." << std::endl;
@@ -246,12 +239,8 @@ void processSolidCyl_GeomMatrix(
     for (Long64_t i = 0; i < nEvents; ++i) {
         Coincidences->GetEntry(i);
 
-        TVector3 gPos1 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32,
-                    layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1,
-                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
-        TVector3 gPos2 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32.,
-                    layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2,
-                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
+        TVector3 gPos1 = convertToPosition(geom, layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);
+        TVector3 gPos2 = convertToPosition(geom, layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);
 
         Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
@@ -312,9 +301,7 @@ void processAnnular(
     uint8_t nLayers,
     const Phantom &myPhantom,
     const Phantom &emptyPhantom,
-    float crystalDepth,
-    float transAxialSize,
-    float axialSize)
+    const ScannerGeometry &geom)
 {
     TFile *file = TFile::Open(filename.c_str());
     if (!file || file->IsZombie()) {
@@ -346,8 +333,6 @@ void processAnnular(
     Long64_t nEvents = Coincidences->GetEntries();
     totalEvents += nEvents;
 
-    double PI = 3.14159265358979323846;
-
     int maxRadialID = int(nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial / 2);
     int maxTrAID = nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
 
@@ -357,12 +342,8 @@ void processAnnular(
     for (Long64_t i = 0; i < nEvents; ++i) {
         Coincidences->GetEntry(i);
 
-        TVector3 gPos1 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32,
-                    layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1,
-                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
-        TVector3 gPos2 = convertToPosition(323.8, -27.0, -27.0 - (nModulesAxial - 1) * 63 * 0.5, 2 * PI / 32.,
-                    layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2,
-                    crystalDepth, transAxialSize, axialSize, nLayers, nCrystalsTransaxial, nSubmodulesAxial);
+        TVector3 gPos1 = convertToPosition(geom, layerID1, crystalID1, submoduleID1, moduleID1, rsectorID1);
+        TVector3 gPos2 = convertToPosition(geom, layerID2, crystalID2, submoduleID2, moduleID2, rsectorID2);
 
         Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
@@ -559,10 +540,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         uint32_t nLayersRptAxial,
     const Phantom &myPhantom,
     const Phantom &emptyPhantom,
-    float transAxialSize,
-    float axialSize,
-    float crystalDepth,
-    float detectorRadius,
+    const ScannerGeometry &geom,
     const std::string &outCSV,
     double axialSigma,
     double transaxialSigma
@@ -668,10 +646,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               nSubmodulesAxial,
               nCrystalsTransaxial,
               nCrystalsAxial,
-              nLayers,
-              crystalDepth,
-              transAxialSize,
-              axialSize);
+              nLayers);
       }
 
       // Apply Gaussian smoothing to ringComponentVector AFTER all solidCyl files processed
@@ -706,9 +681,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               nCrystalsTransaxial,
               nCrystalsAxial,
               nLayers,
-              crystalDepth,
-              transAxialSize,
-              axialSize);
+              geom);
       }
 
       // Compute geometric mean of ringsComponentMatrix
@@ -756,9 +729,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               nLayers,
               myPhantom,
               emptyPhantom,
-              crystalDepth,
-              transAxialSize,
-              axialSize);
+              geom);
       }
 
       // Apply Gaussian smoothing to radialComponentVector AFTER all annular files processed
@@ -1746,140 +1717,6 @@ Sinogram ConvertToSinogram(TVector3& gPos1, TVector3& gPos2) {
 }
 
 
-//=============================================================================
-// ParseScannerXML: Parse scanner configuration from XML file
-// Uses ROOT's TXMLEngine for XML parsing
-//=============================================================================
-ScannerConfig ParseScannerXML(const std::string& filename) {
-    ScannerConfig config;
-
-    TXMLEngine xml;
-    XMLDocPointer_t xmldoc = xml.ParseFile(filename.c_str());
-
-    if (!xmldoc) {
-        std::cerr << "Error: Cannot parse XML file: " << filename << std::endl;
-        return config;
-    }
-
-    XMLNodePointer_t mainnode = xml.DocGetRootElement(xmldoc);
-    if (!mainnode) {
-        std::cerr << "Error: Empty XML document: " << filename << std::endl;
-        xml.FreeDoc(xmldoc);
-        return config;
-    }
-
-    // Get scanner name from root element attribute
-    const char* nameAttr = xml.GetAttr(mainnode, "name");
-    if (nameAttr) {
-        config.name = nameAttr;
-    }
-
-    // Helper lambda to get integer value from a child node
-    auto getIntChild = [&xml](XMLNodePointer_t parent, const char* childName) -> int {
-        XMLNodePointer_t child = xml.GetChild(parent);
-        while (child) {
-            if (std::string(xml.GetNodeName(child)) == childName) {
-                const char* content = xml.GetNodeContent(child);
-                return content ? std::atoi(content) : 0;
-            }
-            child = xml.GetNext(child);
-        }
-        return 0;
-    };
-
-    // Helper lambda to get float value from a child node
-    auto getFloatChild = [&xml](XMLNodePointer_t parent, const char* childName) -> float {
-        XMLNodePointer_t child = xml.GetChild(parent);
-        while (child) {
-            if (std::string(xml.GetNodeName(child)) == childName) {
-                const char* content = xml.GetNodeContent(child);
-                return content ? static_cast<float>(std::atof(content)) : 0.0f;
-            }
-            child = xml.GetNext(child);
-        }
-        return 0.0f;
-    };
-
-    // Helper lambda to get bool value from a child node
-    auto getBoolChild = [&xml](XMLNodePointer_t parent, const char* childName) -> bool {
-        XMLNodePointer_t child = xml.GetChild(parent);
-        while (child) {
-            if (std::string(xml.GetNodeName(child)) == childName) {
-                const char* content = xml.GetNodeContent(child);
-                if (content) {
-                    std::string val(content);
-                    return (val == "true" || val == "1" || val == "yes");
-                }
-                return false;
-            }
-            child = xml.GetNext(child);
-        }
-        return false;
-    };
-
-    // Iterate through child nodes of root element
-    XMLNodePointer_t child = xml.GetChild(mainnode);
-    while (child) {
-        std::string nodeName = xml.GetNodeName(child);
-
-        if (nodeName == "geometry") {
-            config.nRsectorsAngPos = static_cast<uint32_t>(getIntChild(child, "nRsectorsAngPos"));
-            config.nRsectorsAxial = static_cast<uint32_t>(getIntChild(child, "nRsectorsAxial"));
-            config.nModulesTransaxial = static_cast<uint32_t>(getIntChild(child, "nModulesTransaxial"));
-            config.nModulesAxial = static_cast<uint32_t>(getIntChild(child, "nModulesAxial"));
-            config.nSubmodulesTransaxial = static_cast<uint32_t>(getIntChild(child, "nSubmodulesTransaxial"));
-            config.nSubmodulesAxial = static_cast<uint32_t>(getIntChild(child, "nSubmodulesAxial"));
-            config.nCrystalsTransaxial = static_cast<uint32_t>(getIntChild(child, "nCrystalsTransaxial"));
-            config.nCrystalsAxial = static_cast<uint32_t>(getIntChild(child, "nCrystalsAxial"));
-            config.nLayers = static_cast<uint8_t>(getIntChild(child, "nLayers"));
-            config.nLayersRptTransaxial = static_cast<uint32_t>(getIntChild(child, "nLayersRptTransaxial"));
-            config.nLayersRptAxial = static_cast<uint32_t>(getIntChild(child, "nLayersRptAxial"));
-            config.invertDetOrder = getBoolChild(child, "invertDetOrder");
-            config.rsectorIdOrder = getIntChild(child, "rsectorIdOrder");
-
-            // Set defaults if not specified
-            if (config.nLayersRptTransaxial == 0) config.nLayersRptTransaxial = 1;
-            if (config.nLayersRptAxial == 0) config.nLayersRptAxial = 1;
-        }
-        else if (nodeName == "physical") {
-            config.crystalDepth = getFloatChild(child, "crystalDepth");
-            config.axialSize = getFloatChild(child, "axialSize");
-            config.transAxialSize = getFloatChild(child, "transAxialSize");
-            config.detectorRadius = getFloatChild(child, "detectorRadius");
-
-            // Set defaults if not specified
-            if (config.crystalDepth <= 0) config.crystalDepth = 10.0f;
-            if (config.axialSize <= 0) config.axialSize = 59.0f;
-            if (config.transAxialSize <= 0) config.transAxialSize = 59.0f;
-            if (config.detectorRadius <= 0) config.detectorRadius = 321.3f;
-        }
-
-        child = xml.GetNext(child);
-    }
-
-    xml.FreeDoc(xmldoc);
-
-    // Compute nCrystalPerLayer
-    config.computeCrystalPerLayer();
-
-    std::cout << "Loaded scanner configuration from XML: " << filename << std::endl;
-    std::cout << "  Scanner name: " << config.name << std::endl;
-    std::cout << "  nRsectorsAngPos: " << config.nRsectorsAngPos << std::endl;
-    std::cout << "  nRsectorsAxial: " << config.nRsectorsAxial << std::endl;
-    std::cout << "  nModulesTransaxial: " << config.nModulesTransaxial << std::endl;
-    std::cout << "  nModulesAxial: " << config.nModulesAxial << std::endl;
-    std::cout << "  nSubmodulesTransaxial: " << config.nSubmodulesTransaxial << std::endl;
-    std::cout << "  nSubmodulesAxial: " << config.nSubmodulesAxial << std::endl;
-    std::cout << "  nCrystalsTransaxial: " << config.nCrystalsTransaxial << std::endl;
-    std::cout << "  nCrystalsAxial: " << config.nCrystalsAxial << std::endl;
-    std::cout << "  nLayers: " << static_cast<int>(config.nLayers) << std::endl;
-    std::cout << "  crystalDepth: " << config.crystalDepth << " mm" << std::endl;
-    std::cout << "  detectorRadius: " << config.detectorRadius << " mm" << std::endl;
-
-    return config;
-}
-
-
 std::vector<std::string> expandWildcard(const std::string &pattern) {
     glob_t glob_result;
     std::vector<std::string> files;
@@ -1934,39 +1771,13 @@ TVector3 applyRotation(const TVector3& pos, double angle) {
     return TVector3(xRot, yRot, zRot);
 }
 
-TVector3 convertToPosition(double x0, double y0, double z0,
-               double deltaPhi,
+TVector3 convertToPosition(const ScannerGeometry &geom,
                int layerID, int crystalID,
                int submoduleID, int moduleID,
-               int rsectorID,
-               float crystalDepth,
-               float transAxialSize,
-               float axialSize,
-               uint8_t nLayers,
-               uint32_t nCrystalsTransaxial,
-               uint32_t nSubmodulesAxial) {
-
-  // Compute variable displacements according to TODOs:
-  // - layer thickness = crystalDepth / nLayers
-  // - crystal transaxial pitch = transAxialSize / nCrystalsTransaxial
-  // - submodule axial pitch = axialSize / nSubmodulesAxial
-  double layerThickness = (nLayers > 0) ? (crystalDepth / static_cast<double>(nLayers)) : 0.0;
-  double crystalPitch = (nCrystalsTransaxial > 0) ? (transAxialSize / static_cast<double>(nCrystalsTransaxial)) : 0.0;
-  double submodulePitch = (nSubmodulesAxial > 0) ? (axialSize / static_cast<double>(nSubmodulesAxial)) : 0.0;
-
-  double x = x0 + layerID * layerThickness;
-  double y = y0 + crystalID * crystalPitch;
-  double z = z0 + submoduleID * submodulePitch;
-
-  TVector3 localPos(x, y, z);
-
-  // Apply rotation around Z (to place it in the correct angular sector)
-  TVector3 rotated = applyRotation(localPos, rsectorID * deltaPhi);
-
-  // Preserve original module Z-shift behavior (use existing constant)
-  rotated.SetZ(rotated.Z() + moduleID * 63.0);
-
-  return rotated;
+               int rsectorID) {
+  // All the geometry (pitches, gaps, layer radii, rsector angles) comes from the CASToR scanner file
+  const Position3 p = geom.crystalPosition(layerID, crystalID, submoduleID, moduleID, rsectorID);
+  return TVector3(p.x, p.y, p.z);
 }
 
 double meanVector(const std::vector<double>& v)

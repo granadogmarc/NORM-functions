@@ -34,7 +34,7 @@ GATE simulation
   └── annular source   →  *annular*.root    (transaxial + interference correction)
           │
           ▼
-  own-normFactors  -x scanner.xml  -i 'data/*.root'  -o output
+  own-normFactors  -g scanner.geom  -i 'data/*.root'  -o output
           │
           ├── output_CB_df.Cdf / .Cdh          ← full normalization (use this for reconstruction)
           ├── output_effBfGAfGTrAf_df.Cdf/.Cdh ← without interference factor
@@ -57,7 +57,7 @@ GATE simulation
 
 | Argument | Description |
 |----------|-------------|
-| `-x, --xml <path>` | Scanner configuration XML file (see `scanners/`) |
+| `-g, --geom <path>` | Scanner file in the CASToR cylindrical PET format, `.geom` (see `scanners/`) |
 | `-i, --input <pattern>` | Input ROOT file path or glob pattern (quote wildcards) |
 | `-o, --outputFile <name>` | Output file base name (without extension) |
 
@@ -69,31 +69,33 @@ GATE simulation
 | `-j, --threads <N>` | all cores | Number of OpenMP threads |
 | `-as, --axial-sigma <σ>` | `0` (disabled) | Gaussian smoothing sigma for axial (`ringComponentVector`) |
 | `-ts, --transaxial-sigma <σ>` | `0` (disabled) | Gaussian smoothing sigma for transaxial (`radialComponentVector`) |
+| `--invert-det-order` | off | Transaxial detector order is reversed in GATE (not part of the CASToR scanner file) |
+| `--rsector-id-order <0\|1>` | `0` | Rsector ID ordering, see [Cubic array scanners](#cubic-array-scanners) (not part of the CASToR scanner file) |
 | `-h, --help` | | Print usage and exit |
 
 ### Examples
 
 ```bash
 # Minimal: single file, no smoothing
-./own-normFactors -x scanners/32x16x2_4rings.xml \
+./own-normFactors -g scanners/32x16x2_4rings.geom \
                   -i data/sim_solidCyl.root \
                   -o norm_run1
 
 # Multiple files via glob (must quote the pattern)
-./own-normFactors -x scanners/32x16x2_4rings.xml \
+./own-normFactors -g scanners/32x16x2_4rings.geom \
                   -i 'data/sim_*.root' \
                   -o norm_allruns \
                   -d /results/norm/
 
 # With recommended smoothing and 8 threads
-./own-normFactors -x scanners/32x16x2_4rings.xml \
+./own-normFactors -g scanners/32x16x2_4rings.geom \
                   -i 'data/*.root' \
                   -o norm_smooth \
                   -as 0.6 -ts 1.0 \
                   -j 8
 
 # Disable all smoothing explicitly
-./own-normFactors -x scanners/CM2L_1ring.xml \
+./own-normFactors -g scanners/CM2L_1ring.geom \
                   -i data.root \
                   -o norm_raw \
                   -as 0 -ts 0
@@ -122,63 +124,89 @@ Both smoothing options are disabled by default (`sigma=0`). Enable them if artif
 
 ---
 
-## Scanner XML format
+## Scanner file (CASToR `.geom`)
 
-Scanner geometry is described in an XML file. See `scanners/` for working examples.
+The scanner geometry is read from a CASToR cylindrical PET scanner file, passed with `-g`. Field names are the CASToR ones;
+lengths are in mm, angles in degrees and **gaps are edge to edge**. Lines are `label: value`, text after `#` is a comment,
+labels are not case sensitive and fields that are not listed below (`voxels number`, `field of view`, ...) are ignored.
+See `scanners/` for working examples.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<scanner name="MyScannerName">
-    <geometry>
-        <!-- Angular repeater: number of rsectors around the ring -->
-        <nRsectorsAngPos>32</nRsectorsAngPos>
-        <!-- Axial repeater: number of rsector rings along z (1 for most scanners) -->
-        <nRsectorsAxial>1</nRsectorsAxial>
+| Field | Required | Default | Meaning |
+|-------|----------|---------|---------|
+| `modality` | no | | must be `PET` if present |
+| `scanner name` | no | file name | name used in the output header |
+| `number of layers` | yes | | depth layers |
+| `scanner radius` | yes, one per layer | | isocentre to the front face of the layer |
+| `crystals size depth` | yes, one per layer | | depth of the layer |
+| `number of rsectors` | yes | | rsectors around the ring |
+| `number of crystals transaxial` / `axial` | yes | | crystals per submodule |
+| `crystals size trans` / `axial` | yes | | crystal size (here: the voxel pitch) |
+| `number of rsectors axial`, `number of modules transaxial` / `axial`, `number of submodules transaxial` / `axial` | no | `1` | |
+| `crystal gap`, `submodule gap`, `module gap` (`transaxial` / `axial`), `rsector gap axial` | no | `0` | free space between neighbouring elements |
+| `rsectors first angle` | no | `0` | angle of rsector 0 |
+| `rsectors angular span` | no | `360` | rsector step = span / `number of rsectors` |
 
-        <!-- Module repeater (within each rsector) -->
-        <nModulesTransaxial>1</nModulesTransaxial>
-        <nModulesAxial>4</nModulesAxial>
+**Layer-dependent fields.** A CASToR scanner can have several layers stacked in depth, and the fields that may differ from one
+layer to the next are written as a comma separated list with one value per layer, e.g. `scanner radius: 321.3, 326.3`
+(layer 0 starts at 321.3 mm, layer 1 at 326.3 mm). In this tool a layer is a depth segmentation of the detector, so all other
+fields must have the same value in every layer (writing the value once is also accepted); only `scanner radius` and
+`crystals size depth` must list one value per layer.
 
-        <!-- Submodule repeater (within each module) -->
-        <nSubmodulesTransaxial>1</nSubmodulesTransaxial>
-        <nSubmodulesAxial>32</nSubmodulesAxial>
+Two settings are not part of a CASToR scanner file and are command-line options: `--invert-det-order` and `--rsector-id-order`.
 
-        <!-- Crystal repeater (within each submodule) -->
-        <nCrystalsTransaxial>16</nCrystalsTransaxial>
-        <nCrystalsAxial>1</nCrystalsAxial>
+Example (the 59 x 59 x 10 mm module of the 32x32x2 scanner, virtually segmented into 32 x 32 x 2 voxels of 1.84375 x 1.84375 x 5 mm
+and 4 modules separated by a 4 mm gap):
 
-        <!-- DOI layers -->
-        <nLayers>2</nLayers>
-        <nLayersRptTransaxial>1</nLayersRptTransaxial>
-        <nLayersRptAxial>1</nLayersRptAxial>
-
-        <!-- Set true if transaxial detector order is reversed in GATE -->
-        <invertDetOrder>false</invertDetOrder>
-
-        <!-- Rsector ID ordering: 0 = transaxial-first (default), 1 = axial-first (cubic array) -->
-        <rsectorIdOrder>0</rsectorIdOrder>
-    </geometry>
-    <physical>
-        <crystalDepth>10.0</crystalDepth>   <!-- mm, used for DOI offset -->
-        <axialSize>59.0</axialSize>          <!-- mm, submodule pitch along z -->
-        <transAxialSize>59.0</transAxialSize><!-- mm, crystal pitch transaxially -->
-        <detectorRadius>321.3</detectorRadius><!-- mm, inner face of crystal -->
-    </physical>
-</scanner>
 ```
+modality: PET
+scanner name: 32x32x2_4rings_system
+number of layers: 2
+scanner radius: 321.3, 326.3
+number of rsectors: 32, 32
+number of modules axial: 4, 4
+number of submodules axial: 32, 32
+number of crystals transaxial: 32, 32
+number of crystals axial: 1, 1
+crystals size trans: 1.84375, 1.84375
+crystals size axial: 1.84375, 1.84375
+crystals size depth: 5, 5
+module gap axial: 4, 4
+```
+
+#### How crystal positions are derived
+
+Crystal centres are computed in `ScannerGeometry::crystalPosition` (`src/scannerGeometry.cxx`); nothing is hardcoded.
+
+| Quantity | Formula |
+|----------|---------|
+| crystal pitch | `crystals size + crystal gap` |
+| module size (axial) | `nSubmodulesAxial * submodule pitch - submodule gap` (submodule size = `nCrystalsAxial` crystals) |
+| module pitch (axial) | `module size + module gap axial` |
+| radial position of layer `l` | `scanner radius[l] + crystals size depth[l] / 2` |
+| transaxial position | `(crystalID - (nCrystalsTransaxial - 1) / 2) * crystal pitch` |
+| axial position | `(moduleID - (nModulesAxial - 1) / 2) * module pitch + (submoduleID - (nSubmodulesAxial - 1) / 2) * submodule pitch` |
+| angle of rsector `r` | `rsectors first angle + r * span / nRsectors` |
+
+so the crystal stack is centred on z = 0 and on the axis of each rsector. The GATE IDs are mapped as `crystalID` -> transaxial index,
+`submoduleID` and `moduleID` -> axial indices, `rsectorID` -> angular index, which is exact when `number of modules transaxial`,
+`number of submodules transaxial`, `number of crystals axial` and `number of rsectors axial` are all 1; the program prints a warning otherwise.
+
+Earlier versions used fixed values in the position computation (`323.8`, `-27.0`, a 63 mm module pitch and 32 rsectors) that only matched one scanner;
+for the provided 16/32-crystal scanners this shifted all crystals by 0.7-1.6 mm.
 
 ### Provided scanner configurations
 
 | File | Name | Rings | Crystals/ring | Layers |
 |------|------|-------|---------------|--------|
-| `CM2L_1ring.xml` | `CM2L_1ring_system` | 32 | 1024 | 2 |
-| `16x16x2_1ring.xml` | `16x16x2_1ring_system` | 16 | 512 | 2 |
-| `16x16x2_4rings.xml` | `16x16x2_4rings_system` | 64 | 512 | 2 |
-| `32x16x2_4rings.xml` | `32x16x2_4rings_system` | 128 | 512 | 2 |
+| `CM2L_1ring.geom` | `CM2L_1ring_system` | 32 | 1024 | 2 |
+| `16x16x2_1ring.geom` | `16x16x2_1ring_system` | 16 | 512 | 2 |
+| `16x16x2_4rings.geom` | `16x16x2_4rings_system` | 64 | 512 | 2 |
+| `32x16x2_4rings.geom` | `32x16x2_4rings_system` | 128 | 512 | 2 |
+| `32x32x2_4rings.geom` | `32x32x2_4rings_system` | 128 | 1024 | 2 |
 
 ### Cubic array scanners
 
-For scanners where rsectors, modules, submodules or crystals have *both* axial and transaxial counts (e.g. `nModulesTransaxial > 1`), set `rsectorIdOrder` appropriately:
+For scanners where rsectors, modules, submodules or crystals have *both* axial and transaxial counts (e.g. `number of modules transaxial > 1`), set `--rsector-id-order` appropriately:
 
 - `0` — GATE repeats transaxially first: `rsectorID = rsectorAxl * nAngPos + rsectorTrs`
 - `1` — GATE repeats axially first: `rsectorID = rsectorTrs * nAxial + rsectorAxl`
