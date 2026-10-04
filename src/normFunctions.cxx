@@ -504,11 +504,11 @@ std::cout<<"Max castorID is "<<maxCastorID<<std::endl;
                     layerID, crystalID, submoduleID, moduleID, rsectorID);
 
                 lut[castorID] ={
-                		(int)rsectorID,
-                		(int)moduleID,
-                		(int)submoduleID,
-						(int)crystalID,
-						(int) layerID};
+                		(uint32_t)rsectorID,
+                		(uint32_t)moduleID,
+                		(uint32_t)submoduleID,
+						(uint32_t)crystalID,
+						(uint32_t)layerID};
            	}
           }
        	}
