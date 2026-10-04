@@ -3,12 +3,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdlib>
-#include <iostream>
-#include <algorithm>
 #include <random>
+#include <omp.h>
 #include "TROOT.h"
 #include "TApplication.h"
 #include "TGClient.h"
@@ -22,75 +18,184 @@
 #include "TLegend.h"
 #include "normFunctions.h"
 
-
-#include <iostream>
 #include <filesystem>
 #include <vector>
 #include <string>
-#include <map>
-#include <array>
 #include <glob.h>
 
+void printUsage(const char* programName) {
+    std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
+              << "PET normalization factors computation utility.\n\n"
+              << "Required arguments:\n"
+              << "  -g, --geom <path>        Scanner file in the CASToR cylindrical PET format (.geom),\n"
+              << "                             see scanners/ for examples\n"
 
-// bring in your ParseGeomFile, ConvertIDcylindrical, etc:
-#include "normFunctions.h"
+              << "  -i, --input <pattern>    Input ROOT file path or glob pattern\n"
+              << "                             (use quotes for wildcards: 'path/*.root')\n"
+              << "  -o, --outputFile <name>  Output file name (without extension)\n\n"
+              << "Optional arguments:\n"
+              << "  -d, --outputDir <path>   Output directory (default: current directory)\n"
+              << "  -j, --threads <N>        Number of OpenMP threads to use\n"
+              << "                             (default: all available cores)\n"
+              << "  -as, --axial-sigma <value>\n"
+              << "                           Gaussian smoothing sigma for axial normalization\n"
+              << "                             (default: 0 = disabled)\n"
+              << "                             Recommended: 0.6 to reduce sawtooth ripple\n"
+              << "  -ts, --transaxial-sigma <value>\n"
+              << "                           Gaussian smoothing sigma for transaxial normalization\n"
+              << "                             (default: 0 = disabled)\n"
+              << "                             Recommended: 1.0 for central LOR smoothing\n"
+              << "  --invert-det-order       Transaxial detector order is reversed in GATE\n"
+              << "                             (not part of the CASToR scanner file; default: off)\n"
+              << "  --rsector-id-order <0|1> Rsector ID ordering: 0 = transaxial-first (default),\n"
+              << "                             1 = axial-first (cubic array)\n"
+              << "  -h, --help               Show this help message and exit\n\n"
+              << "Examples:\n"
+              << "  " << programName << " -g scanners/CM2L_1ring.geom -i 'data/*.root' -o norm_output\n"
+              << "  " << programName << " -g scanners/16x16x2_4rings.geom -i data.root -o out -j 4\n";
+}
 
 
 int main(int argc,char**argv) {
 
-	std::string scannerName;
-	 std::string pattern;
-	 std::string outputMatrixFileName;
-	 std::string outputDir;
+	std::string geomFile;
+	bool invertDetOrder = false;   // not in the CASToR scanner file
+	int rsectorIdOrder = 0;        // not in the CASToR scanner file
+	std::string pattern;
+	std::string outputMatrixFileName;
+	std::string outputDir;
+	int numThreads = 0;  // 0 means use default (all available)
+	double axialSigma = 0.0;       // Gaussian smoothing sigma for axial normalization (0 = disabled by default)
+	double transaxialSigma = 0.0;  // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
+
+	if (argc == 1) {
+		printUsage(argv[0]);
+		return 1;
+	}
 
 	for (int i = 1; i < argc; ++i) {
-	        std::string arg = argv[i];
+		std::string arg = argv[i];
 
-	        if (arg == "-s" || arg == "--system") {
-	            if (i + 1 < argc) {
-	                scannerName = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
-	        }else  if (arg == "-i" || arg == "--input") {
-	            if (i + 1 < argc) {
-	                pattern = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
-	        }else  if (arg == "-d" || arg == "--outputDir") {
-	            if (i + 1 < argc) {
-	            	outputDir = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
+		if (arg == "-h" || arg == "--help") {
+			printUsage(argv[0]);
+			return 0;
+		}
+		else if (arg == "-g" || arg == "--geom") {
+			if (i + 1 < argc) {
+				geomFile = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "--invert-det-order") {
+			invertDetOrder = true;
+		}
+		else if (arg == "--rsector-id-order") {
+			if (i + 1 < argc) {
+				rsectorIdOrder = std::atoi(argv[++i]);
+				if (rsectorIdOrder != 0 && rsectorIdOrder != 1) {
+					std::cerr << "Error: --rsector-id-order must be 0 or 1.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-i" || arg == "--input") {
+			if (i + 1 < argc) {
+				pattern = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-d" || arg == "--outputDir") {
+			if (i + 1 < argc) {
+				outputDir = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-o" || arg == "--outputFile") {
+			if (i + 1 < argc) {
+				outputMatrixFileName = argv[++i];
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-j" || arg == "--threads") {
+			if (i + 1 < argc) {
+				numThreads = std::atoi(argv[++i]);
+				if (numThreads <= 0) {
+					std::cerr << "Error: invalid thread count. Must be a positive integer.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-as" || arg == "--axial-sigma") {
+			if (i + 1 < argc) {
+				axialSigma = std::atof(argv[++i]);
+				if (axialSigma < 0) {
+					std::cerr << "Error: axial sigma must be non-negative.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else if (arg == "-ts" || arg == "--transaxial-sigma") {
+			if (i + 1 < argc) {
+				transaxialSigma = std::atof(argv[++i]);
+				if (transaxialSigma < 0) {
+					std::cerr << "Error: transaxial sigma must be non-negative.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
+		else {
+			std::cerr << "Error: unknown argument '" << arg << "'\n\n";
+			printUsage(argv[0]);
+			return 1;
+		}
+	}
 
-	        }else  if (arg == "-o" || arg == "--outputFile") {
-	            if (i + 1 < argc) {
-	            	outputMatrixFileName = argv[++i]; // take next argument
-	            } else {
-	                std::cerr << "Error: missing argument after " << arg << "\n";
-	                return 1;
-	            }
-	        }
+	// Set OpenMP thread count if specified
+	if (numThreads > 0) {
+		omp_set_num_threads(numThreads);
+		std::cout << "OpenMP: Using " << numThreads << " thread(s)\n";
+	} else {
+		std::cout << "OpenMP: Using " << omp_get_max_threads() << " thread(s) (default)\n";
+	}
 
 
-	        else {
-	        	std::cerr<<"Usage: "<<argv[0]<<"\n-i or --input path/to/file or 'path/to/pattern'\n -s or --system systemName\n -o or --output path/to/outputFile\n";
-	        	return 1;
-	        }
+  // Load the scanner file (CASToR .geom) first (fail-fast on config errors)
+  if (geomFile.empty()) {
+      std::cerr << "Error: scanner file is required (-g/--geom)\n";
+      printUsage(argv[0]);
+      return 1;
+  }
 
-
-	    }
-
-	if (argc==1) {
-		        	std::cerr<<"Usage: "<<argv[0]<<"\n-i or --input path/to/file or 'path/to/pattern'\n -s or --system systemName\n -o or --output path/to/outputFile\n";
-		        	return 1;
-		        }
-
+  ScannerGeometry geom;
+  {
+      std::string geomError;
+      if (!ParseCastorGeom(geomFile, geom, geomError)) {
+          std::cerr << "Error: cannot use scanner file " << geomFile << ": " << geomError << "\n";
+          return 1;
+      }
+  }
+  std::cout << "Loaded scanner file: " << geomFile << std::endl;
+  geom.print(std::cout);
 
 	std::cout<<"outDir = "<<outputDir<<" fileName "<<outputMatrixFileName<<std::endl;
   	  std::cout<<"pattern is "<< pattern<<std::endl;
@@ -107,92 +212,6 @@ int main(int argc,char**argv) {
       }
       std::cout << "Total number of files: " << files.size() << "\n";
 
-
-  // 2) Precompute how many unique castorIDs we expect:
-
-
-  bool invertDetOrder = false;
-  int rsectorIdOrder = 0;
-
-
-  uint32_t nRsectorsAngPos, nRsectorsAxial;
-
-  uint32_t nModulesTransaxial, nModulesAxial;
-  uint32_t nSubmodulesTransaxial, nSubmodulesAxial;
-  uint32_t nCrystalsTransaxial, nCrystalsAxial;
-  uint8_t nLayers;
-  uint32_t nLayersRptTransaxial, nLayersRptAxial;
-
- if (scannerName=="CM2L_1ring_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 1;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 32;
-  nCrystalsTransaxial = 32;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
- else if (scannerName =="16x16x2_1ring_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 1;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 16;
-  nCrystalsTransaxial = 16;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
-
- else if (scannerName =="16x16x2_4rings_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 4;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 16;
-  nCrystalsTransaxial = 16;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
-
- else if (scannerName =="32x16x2_4rings_system"){
-
-  nRsectorsAngPos = 32;
-  nRsectorsAxial = 1;
-  nModulesTransaxial = 1;
-  nModulesAxial = 4;
-  nSubmodulesTransaxial = 1;
-  nSubmodulesAxial = 32;
-  nCrystalsTransaxial = 16;
-  nCrystalsAxial = 1;
-  nLayers = 2;
-  nLayersRptTransaxial = 1;
-  nLayersRptAxial = 1;
- }
-
- else{ std::cerr << "Error: no system provided from the expected list\n";
- return 1;}
-
-
- float		crystalDepth = 10. ;// in mm
- float		detectorRadius = 321.3 + crystalDepth/nLayers*0.5 + 0.5; //in mm //Here I add half a millimeter to ensure there is no drama with the projection caused by two different lenths
-
- uint32_t nCrystalPerLayer[nLayers] = {nRsectorsAngPos * nRsectorsAxial *nModulesTransaxial * nModulesAxial *nSubmodulesTransaxial * nSubmodulesAxial
-		 	 	 	 	 	 	 	 	 * nCrystalsTransaxial * nCrystalsAxial *nLayersRptTransaxial,
-										nRsectorsAngPos * nRsectorsAxial *nModulesTransaxial * nModulesAxial *nSubmodulesTransaxial * nSubmodulesAxial
-										* nCrystalsTransaxial * nCrystalsAxial *nLayersRptTransaxial};//All of them
 
 
   Phantom myPhantom;
@@ -245,28 +264,38 @@ int main(int argc,char**argv) {
   	emptyPhantom.name =			"empty Cylinder";
 
   std::cout<<"About to enter compute norm functions"<<std::endl;
+  std::cout<<"Axial smoothing sigma: " << axialSigma << (axialSigma == 0 ? " (disabled)" : "") << std::endl;
+  std::cout<<"Transaxial smoothing sigma: " << transaxialSigma << (transaxialSigma == 0 ? " (disabled)" : "") << std::endl;
 
+  // Number of crystals per layer (same for every layer, see ScannerGeometry)
+  const uint32_t totalCrystalsPerLayer =
+      geom.nRsectorsAngPos * geom.nRsectorsAxial *
+      geom.nModulesTransaxial * geom.nModulesAxial *
+      geom.nSubmodulesTransaxial * geom.nSubmodulesAxial *
+      geom.nCrystalsTransaxial * geom.nCrystalsAxial;
+  std::vector<uint32_t> nCrystalPerLayerVec(geom.nLayers, totalCrystalsPerLayer);
 
-  computeNormalizationFactors(files,scannerName,outputDir,outputMatrixFileName,
-          nRsectorsAngPos,
-          nRsectorsAxial,
+  computeNormalizationFactors(files, geom.name, outputDir, outputMatrixFileName,
+          geom.nRsectorsAngPos,
+          geom.nRsectorsAxial,
           invertDetOrder,
           rsectorIdOrder,
-          nModulesTransaxial,
-          nModulesAxial,
-          nSubmodulesTransaxial,
-          nSubmodulesAxial,
-          nCrystalsTransaxial,
-          nCrystalsAxial,
-          nLayers,
-          nCrystalPerLayer,
-          nLayersRptTransaxial,
-          nLayersRptAxial,
+          geom.nModulesTransaxial,
+          geom.nModulesAxial,
+          geom.nSubmodulesTransaxial,
+          geom.nSubmodulesAxial,
+          geom.nCrystalsTransaxial,
+          geom.nCrystalsAxial,
+          static_cast<uint8_t>(geom.nLayers),
+          nCrystalPerLayerVec.data(),
+          1,   // nLayersRptTransaxial
+          1,   // nLayersRptAxial
           myPhantom,
           emptyPhantom,
-		  crystalDepth,
-          detectorRadius,
-		  outputMatrixFileName+".csv");
+          geom,
+          outputMatrixFileName+".csv",
+          axialSigma,
+          transaxialSigma);
 
   return 0;
 }
