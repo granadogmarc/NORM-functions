@@ -45,6 +45,11 @@ void printUsage(const char* programName) {
               << "                           Gaussian smoothing sigma for transaxial normalization\n"
               << "                             (default: 0 = disabled)\n"
               << "                             Recommended: 1.0 for central LOR smoothing\n"
+              << "                             (not recommended when the layers have different\n"
+              << "                             transaxial crystal counts, see TECHNICAL_NOTE 9.3)\n"
+              << "  -f, --fov-radius <mm>    Transaxial FOV radius: only LORs whose segment crosses\n"
+              << "                             the circle of this radius are used and written\n"
+              << "                             (default: 300)\n"
               << "  --invert-det-order       Transaxial detector order is reversed in GATE\n"
               << "                             (not part of the CASToR scanner file; default: off)\n"
               << "  --rsector-id-order <0|1> Rsector ID ordering: 0 = transaxial-first (default),\n"
@@ -67,6 +72,7 @@ int main(int argc,char**argv) {
 	int numThreads = 0;  // 0 means use default (all available)
 	double axialSigma = 0.0;       // Gaussian smoothing sigma for axial normalization (0 = disabled by default)
 	double transaxialSigma = 0.0;  // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
+	double fovRadius = 300.0;      // transaxial FOV radius (mm)
 
 	if (argc == 1) {
 		printUsage(argv[0]);
@@ -151,6 +157,18 @@ int main(int argc,char**argv) {
 				return 1;
 			}
 		}
+		else if (arg == "-f" || arg == "--fov-radius") {
+			if (i + 1 < argc) {
+				fovRadius = std::atof(argv[++i]);
+				if (!(fovRadius > 0)) {
+					std::cerr << "Error: FOV radius must be positive.\n";
+					return 1;
+				}
+			} else {
+				std::cerr << "Error: missing argument after " << arg << "\n";
+				return 1;
+			}
+		}
 		else if (arg == "-ts" || arg == "--transaxial-sigma") {
 			if (i + 1 < argc) {
 				transaxialSigma = std::atof(argv[++i]);
@@ -196,6 +214,19 @@ int main(int argc,char**argv) {
   }
   std::cout << "Loaded scanner file: " << geomFile << std::endl;
   geom.print(std::cout);
+
+  const double innerRadius = *std::min_element(geom.layerRadius.begin(), geom.layerRadius.end());
+  if (fovRadius >= innerRadius) {
+      std::cerr << "Error: FOV radius (" << fovRadius << " mm) must be smaller than the scanner radius ("
+                << innerRadius << " mm)\n";
+      return 1;
+  }
+  std::cout << "Transaxial FOV radius: " << fovRadius << " mm" << std::endl;
+  if (!geom.uniformCrystalsTransaxial && transaxialSigma > 0.0) {
+      std::cout << "WARNING: transaxial smoothing (-ts) mixes neighbouring radial bins, which are filled by "
+                   "different layer pairs when the layers have different transaxial crystal counts "
+                   "(see TECHNICAL_NOTE 9.3)" << std::endl;
+  }
 
 	std::cout<<"outDir = "<<outputDir<<" fileName "<<outputMatrixFileName<<std::endl;
   	  std::cout<<"pattern is "<< pattern<<std::endl;
@@ -267,13 +298,9 @@ int main(int argc,char**argv) {
   std::cout<<"Axial smoothing sigma: " << axialSigma << (axialSigma == 0 ? " (disabled)" : "") << std::endl;
   std::cout<<"Transaxial smoothing sigma: " << transaxialSigma << (transaxialSigma == 0 ? " (disabled)" : "") << std::endl;
 
-  // Number of crystals per layer (same for every layer, see ScannerGeometry)
-  const uint32_t totalCrystalsPerLayer =
-      geom.nRsectorsAngPos * geom.nRsectorsAxial *
-      geom.nModulesTransaxial * geom.nModulesAxial *
-      geom.nSubmodulesTransaxial * geom.nSubmodulesAxial *
-      geom.nCrystalsTransaxial * geom.nCrystalsAxial;
-  std::vector<uint32_t> nCrystalPerLayerVec(geom.nLayers, totalCrystalsPerLayer);
+  // Number of crystals per layer (the transaxial crystal count can differ between layers)
+  std::vector<uint32_t> nCrystalPerLayerVec(geom.nLayers);
+  for (uint32_t l = 0; l < geom.nLayers; ++l) nCrystalPerLayerVec[l] = geom.nCrystalsInLayer(l);
 
   computeNormalizationFactors(files, geom.name, outputDir, outputMatrixFileName,
           geom.nRsectorsAngPos,
@@ -284,7 +311,7 @@ int main(int argc,char**argv) {
           geom.nModulesAxial,
           geom.nSubmodulesTransaxial,
           geom.nSubmodulesAxial,
-          geom.nCrystalsTransaxial,
+          geom.nCrystalsTransaxial.data(),
           geom.nCrystalsAxial,
           static_cast<uint8_t>(geom.nLayers),
           nCrystalPerLayerVec.data(),
@@ -295,7 +322,8 @@ int main(int argc,char**argv) {
           geom,
           outputMatrixFileName+".csv",
           axialSigma,
-          transaxialSigma);
+          transaxialSigma,
+          fovRadius);
 
   return 0;
 }

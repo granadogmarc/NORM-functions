@@ -147,7 +147,7 @@ DetectorIndices ReverseCastorID(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial, // per layer
     uint32_t nCrystalsAxial,
     uint8_t  nLayers,
     uint32_t *nCrystalPerLayer,
@@ -164,7 +164,7 @@ std::vector<DetectorIndices> buildCastorIDLUT(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial, // per layer
     uint32_t nCrystalsAxial,
     uint8_t  nLayers,
     uint32_t *nCrystalPerLayer,
@@ -573,7 +573,7 @@ void processSolidCyl_BlockCounts(
     const std::string &filename,
     vectorRingComponent &ringComponentVector,
     DetectorCounters &detectorEfficyCounts,
-    FanSumCounter &fanSumCounter,
+    std::vector<FanSumCounter> &fanSumCounters,  // one shared counter, or one per layer
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
     uint32_t nRsectorsAxial,
@@ -582,7 +582,7 @@ void processSolidCyl_BlockCounts(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial, // per layer
     uint32_t nCrystalsAxial,
     uint8_t nLayers
 );
@@ -602,24 +602,25 @@ void processSolidCyl_GeomMatrix(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial, // per layer
     uint32_t nCrystalsAxial,
     uint8_t nLayers,
-    const ScannerGeometry &geom
+    const ScannerGeometry &geom,
+    double fovRadius     // LORs with |R| > fovRadius (mm) are ignored
 );
 
 // Annular source processing: Build radialComponentVector and blockTrAComponentMatrix
 // Uses results from solidCyl processing (ringComponentVector, ringsComponentMatrix, fanSumCounter)
 void processAnnular(
     const std::string &filename,
-    matrixRingsComponent &blockTrAComponentMatrix,
+    std::vector<matrixRingsComponent> &blockTrAComponentMatrices,  // one shared matrix, or one per layer
     vectorRadialComponent &radialComponentVector,
     std::vector<float> &minPhysicalR,  // Track min physical R (mm) per radialID bin
     const vectorRingComponent &ringComponentVector,
     double meanRingComponentVector,
     const matrixRingsComponent &ringsComponentMatrix,
     double meanRingsComponentMatrix,
-    const FanSumCounter &fanSumCounter,
+    const std::vector<FanSumCounter> &fanSumCounters,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
     uint32_t nRsectorsAxial,
@@ -628,12 +629,13 @@ void processAnnular(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial, // per layer
     uint32_t nCrystalsAxial,
     uint8_t nLayers,
     const Phantom &myPhantom,
     const Phantom &emptyPhantom,
-    const ScannerGeometry &geom
+    const ScannerGeometry &geom,
+    double fovRadius     // LORs with |R| > fovRadius (mm) are ignored
 );
 
 
@@ -649,7 +651,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         uint32_t nModulesAxial,
         uint32_t nSubmodulesTransaxial,
         uint32_t nSubmodulesAxial,
-        uint32_t nCrystalsTransaxial,
+        const uint32_t *nCrystalsTransaxial, // per layer
         uint32_t nCrystalsAxial,
         uint8_t  nLayers,
         uint32_t* nCrystalPerLayer,
@@ -660,7 +662,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         const ScannerGeometry &geom,   // geometry read from the CASToR scanner file
         const std::string &outCSV,
         double axialSigma = 0.0,      // Gaussian smoothing sigma for axial normalization (0 = disabled by default)
-        double transaxialSigma = 0.0  // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
+        double transaxialSigma = 0.0, // Gaussian smoothing sigma for transaxial normalization (0 = disabled by default)
+        double fovRadius = 300.0      // transaxial FOV radius (mm): only LORs with |R| <= fovRadius are used and written
       );
 
 
@@ -694,7 +697,7 @@ uint32_t ConvertIDcylindrical(uint32_t  nRsectorsAngPos,
                               uint32_t  nModulesAxial,
                               uint32_t  nSubmodulesTransaxial,
                               uint32_t  nSubmodulesAxial,
-                              uint32_t  nCrystalsTransaxial,
+                              const uint32_t *nCrystalsTransaxial, // per layer
                               uint32_t  nCrystalsAxial,
                               uint8_t   nLayers,
                               uint32_t	*nCrystalPerLayer,

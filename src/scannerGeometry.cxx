@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <numeric>
 #include <ostream>
 #include <sstream>
 
@@ -131,23 +132,40 @@ bool ScannerGeometry::finalize(std::string &error) {
         error = "inconsistent number of layers";
         return false;
     }
-    if (nRsectorsAngPos == 0 || nCrystalsTransaxial == 0 || nCrystalsAxial == 0 ||
+    if (nCrystalsTransaxial.size() != nLayers || crystalSizeTrans.size() != nLayers ||
+        crystalGapTrans.size() != nLayers) {
+        error = "inconsistent number of layers";
+        return false;
+    }
+    if (nRsectorsAngPos == 0 || nCrystalsAxial == 0 ||
         nModulesTransaxial == 0 || nModulesAxial == 0 ||
         nSubmodulesTransaxial == 0 || nSubmodulesAxial == 0 || nRsectorsAxial == 0) {
         error = "all element counts must be at least 1";
         return false;
     }
-    if (crystalSizeTrans <= 0.0 || crystalSizeAxial <= 0.0) {
-        error = "'crystals size trans' and 'crystals size axial' must be positive";
+    if (crystalSizeAxial <= 0.0) {
+        error = "'crystals size axial' must be positive";
         return false;
     }
     for (uint32_t l = 0; l < nLayers; ++l) {
+        if (nCrystalsTransaxial[l] == 0) {
+            error = "all element counts must be at least 1";
+            return false;
+        }
+        if (crystalSizeTrans[l] <= 0.0) {
+            error = "'crystals size trans' must be positive";
+            return false;
+        }
+        if (crystalGapTrans[l] < 0) {
+            error = "gaps must not be negative";
+            return false;
+        }
         if (layerRadius[l] <= 0.0 || layerDepth[l] <= 0.0) {
             error = "'scanner radius' and 'crystals size depth' must be positive";
             return false;
         }
     }
-    if (crystalGapTrans < 0 || crystalGapAxial < 0 || submoduleGapTrans < 0 ||
+    if (crystalGapAxial < 0 || submoduleGapTrans < 0 ||
         submoduleGapAxial < 0 || moduleGapTrans < 0 || moduleGapAxial < 0 || rsectorGapAxial < 0) {
         error = "gaps must not be negative";
         return false;
@@ -158,7 +176,6 @@ bool ScannerGeometry::finalize(std::string &error) {
     }
 
     // Edge to edge gaps: an element is as large as its children plus the gaps between them.
-    crystalPitchTrans = crystalSizeTrans + crystalGapTrans;
     crystalPitchAxial = crystalSizeAxial + crystalGapAxial;
 
     const double submoduleSizeAxial = nCrystalsAxial * crystalPitchAxial - crystalGapAxial;
@@ -167,7 +184,14 @@ bool ScannerGeometry::finalize(std::string &error) {
     moduleSizeAxial = nSubmodulesAxial * submodulePitchAxial - submoduleGapAxial;
     modulePitchAxial = moduleSizeAxial + moduleGapAxial;
 
-    moduleSizeTrans = nCrystalsTransaxial * crystalPitchTrans - crystalGapTrans;
+    crystalPitchTrans.resize(nLayers);
+    moduleSizeTrans.resize(nLayers);
+    for (uint32_t l = 0; l < nLayers; ++l) {
+        crystalPitchTrans[l] = crystalSizeTrans[l] + crystalGapTrans[l];
+        moduleSizeTrans[l] = nCrystalsTransaxial[l] * crystalPitchTrans[l] - crystalGapTrans[l];
+    }
+
+    if (!buildTransaxialGrid(error)) return false;
 
     rsectorStepRad = rsectorAngularSpanDeg * kPi / 180.0 / static_cast<double>(nRsectorsAngPos);
 
@@ -188,6 +212,13 @@ bool ScannerGeometry::finalize(std::string &error) {
             "rsectorID (angular); the transaxial module/submodule counts, the axial crystal count "
             "and the axial rsector count are not used for positions (all must be 1 for exact positions)");
     }
+    if (gridMismatch > 0.25) {
+        std::ostringstream w;
+        w << "the crystals of the layers do not span the same transaxial width: crystal "
+             "positions on the common transaxial grid are off by up to "
+          << gridMismatch << " grid spacing(s)";
+        warnings.push_back(w.str());
+    }
     if (rsectorAngularSpanDeg < 360.0 - 1e-9) {
         warnings.push_back("rsectors angular span < 360: the angle between rsectors is assumed to be "
                            "span / number of rsectors");
@@ -195,11 +226,77 @@ bool ScannerGeometry::finalize(std::string &error) {
     return true;
 }
 
+bool ScannerGeometry::buildTransaxialGrid(std::string &error) {
+    uint64_t lcm = 1;
+    for (uint32_t l = 0; l < nLayers; ++l) {
+        lcm = std::lcm(lcm, static_cast<uint64_t>(nCrystalsTransaxial[l]));
+        if (lcm > (1u << 20)) {
+            error = "the transaxial crystal counts of the layers have no usable common grid "
+                    "(least common multiple too large)";
+            return false;
+        }
+    }
+    const uint32_t L = static_cast<uint32_t>(lcm);
+
+    uniformCrystalsTransaxial = true;
+    bool allRatiosOdd = true;
+    for (uint32_t l = 0; l < nLayers; ++l) {
+        if (nCrystalsTransaxial[l] != nCrystalsTransaxial[0]) uniformCrystalsTransaxial = false;
+        if ((L / nCrystalsTransaxial[l]) % 2 == 0) allRatiosOdd = false;
+    }
+
+    gridStep.resize(nLayers);
+    gridOffset.resize(nLayers);
+    gridPointsPerSubmodule = allRatiosOdd ? L : 2 * L;
+    for (uint32_t l = 0; l < nLayers; ++l) {
+        const uint32_t r = L / nCrystalsTransaxial[l];
+        if (allRatiosOdd) {
+            // centre of crystal j = centre of point j*r + (r-1)/2
+            gridStep[l] = r;
+            gridOffset[l] = (r - 1) / 2;
+        } else {
+            // centre of crystal j = point (2j+1)*r, points on the half pitch of the finest layer
+            gridStep[l] = 2 * r;
+            gridOffset[l] = r;
+        }
+    }
+
+    // The grid assumes the crystals of every layer share the same transaxial
+    // width (count * pitch). A difference d between two layers moves the outer
+    // crystals by up to d/2 with respect to each other.
+    gridMismatch = 0.0;
+    if (!uniformCrystalsTransaxial) {
+        double minSpan = nCrystalsTransaxial[0] * crystalPitchTrans[0];
+        double maxSpan = minSpan, sumSpan = 0.0;
+        for (uint32_t l = 0; l < nLayers; ++l) {
+            const double span = nCrystalsTransaxial[l] * crystalPitchTrans[l];
+            minSpan = std::min(minSpan, span);
+            maxSpan = std::max(maxSpan, span);
+            sumSpan += span;
+        }
+        const double spacing = sumSpan / nLayers / gridPointsPerSubmodule;
+        gridMismatch = 0.5 * (maxSpan - minSpan) / spacing;
+    }
+    return true;
+}
+
+uint32_t ScannerGeometry::maxNCrystalsTransaxial() const {
+    return nCrystalsTransaxial.empty()
+               ? 0
+               : *std::max_element(nCrystalsTransaxial.begin(), nCrystalsTransaxial.end());
+}
+
+uint32_t ScannerGeometry::nCrystalsInLayer(uint32_t layerID) const {
+    return nRsectorsAngPos * nRsectorsAxial * nModulesTransaxial * nModulesAxial *
+           nSubmodulesTransaxial * nSubmodulesAxial * nCrystalsTransaxial[layerID] * nCrystalsAxial;
+}
+
 Position3 ScannerGeometry::crystalPosition(int layerID, int crystalID, int submoduleID,
                                            int moduleID, int rsectorID) const {
     // Position in the frame of rsector 0: x radial (layer centre), y transaxial, z axial.
     const double xl = layerCentreRadius[layerID];
-    const double yl = (crystalID - 0.5 * (static_cast<double>(nCrystalsTransaxial) - 1.0)) * crystalPitchTrans;
+    const double yl = (crystalID - 0.5 * (static_cast<double>(nCrystalsTransaxial[layerID]) - 1.0)) *
+                      crystalPitchTrans[layerID];
     const double zl = (moduleID - 0.5 * (static_cast<double>(nModulesAxial) - 1.0)) * modulePitchAxial +
                       (submoduleID - 0.5 * (static_cast<double>(nSubmodulesAxial) - 1.0)) * submodulePitchAxial;
 
@@ -225,16 +322,20 @@ void ScannerGeometry::print(std::ostream &os) const {
        << "  layers: " << nLayers << ", rsectors: " << nRsectorsAngPos
        << ", modules (trans x axial): " << nModulesTransaxial << " x " << nModulesAxial
        << ", submodules: " << nSubmodulesTransaxial << " x " << nSubmodulesAxial
-       << ", crystals: " << nCrystalsTransaxial << " x " << nCrystalsAxial << "\n";
-    os << "  crystal size (trans x axial): " << crystalSizeTrans << " x " << crystalSizeAxial
+       << ", crystals axial: " << nCrystalsAxial << "\n";
+    os << "  crystal size axial: " << crystalSizeAxial
        << " mm, gaps crystal/submodule/module axial: " << crystalGapAxial << "/"
        << submoduleGapAxial << "/" << moduleGapAxial << " mm\n";
     for (uint32_t l = 0; l < nLayers; ++l) {
-        os << "  layer " << l << ": scanner radius " << layerRadius[l] << " mm, depth "
+        os << "  layer " << l << ": " << nCrystalsTransaxial[l] << " crystals transaxial of "
+           << crystalSizeTrans[l] << " mm (gap " << crystalGapTrans[l] << " mm, rsector block "
+           << moduleSizeTrans[l] << " mm), scanner radius " << layerRadius[l] << " mm, depth "
            << layerDepth[l] << " mm (centre at " << layerCentreRadius[l] << " mm)\n";
     }
-    os << "  rsector block: " << moduleSizeTrans << " mm transaxial, module axial size "
-       << moduleSizeAxial << " mm, module pitch " << modulePitchAxial << " mm\n";
+    if (!uniformCrystalsTransaxial) {
+        os << "  common transaxial grid: " << gridPointsPerSubmodule << " points per submodule\n";
+    }
+    os << "  module axial size " << moduleSizeAxial << " mm, module pitch " << modulePitchAxial << " mm\n";
     os << "  rsector step: " << rsectorStepRad * 180.0 / kPi << " deg, first angle "
        << rsectorFirstAngleDeg << " deg\n";
     for (size_t i = 0; i < warnings.size(); ++i) os << "  WARNING: " << warnings[i] << "\n";
@@ -285,14 +386,20 @@ bool ParseCastorGeomText(const std::string &text, const std::string &defaultName
     if (!count("number of modules axial", false, 1, geom.nModulesAxial)) return false;
     if (!count("number of submodules transaxial", false, 1, geom.nSubmodulesTransaxial)) return false;
     if (!count("number of submodules axial", false, 1, geom.nSubmodulesAxial)) return false;
-    if (!count("number of crystals transaxial", true, 1, geom.nCrystalsTransaxial)) return false;
     if (!count("number of crystals axial", true, 1, geom.nCrystalsAxial)) return false;
+    {
+        std::vector<double> v;
+        if (!readPerLayer(fields, "number of crystals transaxial", nL, true, false, 1.0, v, error)) return false;
+        geom.nCrystalsTransaxial.resize(nL);
+        for (uint32_t l = 0; l < nL; ++l)
+            if (!toCount(v[l], "number of crystals transaxial", geom.nCrystalsTransaxial[l], error)) return false;
+    }
 
     // CASToR treats the crystal sizes as optional, but they define the positions here.
-    if (!scalar("crystals size trans", true, 0.0, geom.crystalSizeTrans)) return false;
+    if (!readPerLayer(fields, "crystals size trans", nL, true, false, 0.0, geom.crystalSizeTrans, error)) return false;
     if (!scalar("crystals size axial", true, 0.0, geom.crystalSizeAxial)) return false;
 
-    if (!scalar("crystal gap transaxial", false, 0.0, geom.crystalGapTrans)) return false;
+    if (!readPerLayer(fields, "crystal gap transaxial", nL, false, false, 0.0, geom.crystalGapTrans, error)) return false;
     if (!scalar("crystal gap axial", false, 0.0, geom.crystalGapAxial)) return false;
     if (!scalar("submodule gap transaxial", false, 0.0, geom.submoduleGapTrans)) return false;
     if (!scalar("submodule gap axial", false, 0.0, geom.submoduleGapAxial)) return false;
@@ -300,7 +407,7 @@ bool ParseCastorGeomText(const std::string &text, const std::string &defaultName
     if (!scalar("module gap axial", false, 0.0, geom.moduleGapAxial)) return false;
     if (!scalar("rsector gap axial", false, 0.0, geom.rsectorGapAxial)) return false;
 
-    // The only layer-dependent values used individually: one value per layer is required.
+    // Layer-dependent values without a meaningful common value: one value per layer is required.
     if (!readPerLayer(fields, "scanner radius", nL, true, true, 0.0, geom.layerRadius, error)) return false;
     if (!readPerLayer(fields, "crystals size depth", nL, true, true, 0.0, geom.layerDepth, error)) return false;
 

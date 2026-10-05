@@ -68,7 +68,8 @@ GATE simulation
 | `-d, --outputDir <path>` | `.` (current dir) | Directory for all output files |
 | `-j, --threads <N>` | all cores | Number of OpenMP threads |
 | `-as, --axial-sigma <σ>` | `0` (disabled) | Gaussian smoothing sigma for axial (`ringComponentVector`) |
-| `-ts, --transaxial-sigma <σ>` | `0` (disabled) | Gaussian smoothing sigma for transaxial (`radialComponentVector`) |
+| `-ts, --transaxial-sigma <σ>` | `0` (disabled) | Gaussian smoothing sigma for transaxial (`radialComponentVector`); not recommended when the layers have different transaxial crystal counts |
+| `-f, --fov-radius <mm>` | `300` | Transaxial FOV radius: only LORs whose segment crosses this circle are used (all passes) and written. Must be smaller than the scanner radius |
 | `--invert-det-order` | off | Transaxial detector order is reversed in GATE (not part of the CASToR scanner file) |
 | `--rsector-id-order <0\|1>` | `0` | Rsector ID ordering, see [Cubic array scanners](#cubic-array-scanners) (not part of the CASToR scanner file) |
 | `-h, --help` | | Print usage and exit |
@@ -121,6 +122,8 @@ Both smoothing options are disabled by default (`sigma=0`). Enable them if artif
 | `0` | Default; last bin (r=0 LORs) replaced with second-to-last if zero |
 | `1.0` | Recommended when central LOR artifacts are visible |
 | `1.5` | Stronger; use for very low-statistics annular runs |
+
+When the layers have different transaxial crystal counts, neighbouring radial bins are filled by different layer pairs and differ for geometric reasons, so smoothing across them mixes those values; keep `-ts 0` (a warning is printed otherwise, see `TECHNICAL_NOTE.md`, 9.3).
 
 ---
 

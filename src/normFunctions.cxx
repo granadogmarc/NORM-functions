@@ -8,27 +8,83 @@
 #include <omp.h>
 
 
-// Helper: compute transaxial strides (keeps consistent packing between loops)
-struct TransaxialStrides {
-  int strideLayer;
-  int strideCrystal;
-  int strideSubmodule;
-  int strideModule;
-  int strideRsector;
+// Transaxial position of a crystal, used for radialID and trAID.
+//   ringPos: position around the ring on the common transaxial grid of all layers
+//            (ScannerGeometry::gridPoint), so that crystals of layers with
+//            different transaxial counts can be compared; layers are excluded.
+//            With uniform counts it is the transaxial crystal index.
+//   trAID:   transaxial index of the crystal inside its rsector, counted in
+//            the crystals of its own layer.
+struct TransaxialPosition {
+  int ringPos;
+  int trAID;
 };
 
-static inline TransaxialStrides makeTransaxialStrides(uint32_t nModulesTransaxial,
-                           uint32_t nSubmodulesTransaxial,
-                           uint32_t nCrystalsTransaxial,
-                           uint8_t  /*nLayers*/) {
-  TransaxialStrides s;
-  s.strideLayer = 1;
-  // remove layers from transaxial strides (18D packing)
-  s.strideCrystal = 1;
-  s.strideSubmodule = int(nCrystalsTransaxial);
-  s.strideModule = int(nCrystalsTransaxial) * int(nSubmodulesTransaxial);
-  s.strideRsector = int(nModulesTransaxial) * int(nSubmodulesTransaxial) * int(nCrystalsTransaxial);
-  return s;
+static inline TransaxialPosition transaxialPosition(const ScannerGeometry &geom,
+                                                    int layerID, int rsectorTrs,
+                                                    int moduleID, int submoduleID, int crystalID) {
+  const int nModTrs  = int(geom.nModulesTransaxial);
+  const int nSubTrs  = int(geom.nSubmodulesTransaxial);
+  const int nCrysTrs = int(geom.nCrystalsTransaxial[layerID]);
+  const int nGrid    = int(geom.gridPointsPerSubmodule);
+
+  const int moduleTrs    = moduleID    % nModTrs;
+  const int submoduleTrs = submoduleID % nSubTrs;
+  const int crystalTrs   = crystalID   % nCrysTrs;
+
+  TransaxialPosition p;
+  p.trAID   = (moduleTrs * nSubTrs + submoduleTrs) * nCrysTrs + crystalTrs;
+  p.ringPos = ((rsectorTrs * nModTrs + moduleTrs) * nSubTrs + submoduleTrs) * nGrid
+            + int(geom.gridPoint(layerID, crystalTrs));
+  return p;
+}
+
+// Number of grid points around the ring (see transaxialPosition)
+static inline int gridPointsPerRing(const ScannerGeometry &geom) {
+  return int(geom.nRsectorsAngPos * geom.nModulesTransaxial * geom.nSubmodulesTransaxial *
+             geom.gridPointsPerSubmodule);
+}
+
+// Per-layer containers (block transaxial matrices, fan-sum counters) hold a
+// single entry shared by all layers when the layers have the same transaxial
+// crystal count, and one entry per layer otherwise.
+template <typename T>
+static inline size_t layerSlot(const std::vector<T> &perLayer, int layerID) {
+  return perLayer.size() == 1 ? 0 : size_t(layerID);
+}
+
+// Fan-sum efficiency factor of a LOR whose crystals may belong to different
+// fan-sum counters (same formula as FanSumCounter::getEfficiencyFactor).
+static inline double fanSumEfficiency(const std::vector<FanSumCounter> &fanSum,
+                                      int layer1, int ring1, int trans1,
+                                      int layer2, int ring2, int trans2) {
+  const FanSumCounter &f1 = fanSum[layerSlot(fanSum, layer1)];
+  const FanSumCounter &f2 = fanSum[layerSlot(fanSum, layer2)];
+  if (&f1 == &f2) return f1.getEfficiencyFactor(ring1, trans1, ring2, trans2);
+
+  Long64_t fan1 = f1.getFanCount(ring1, trans1);
+  Long64_t fan2 = f2.getFanCount(ring2, trans2);
+  if (fan1 <= 0 || fan2 <= 0) return 1.0;
+  double avg1 = f1.getRingAverageFan(ring1);
+  double avg2 = f2.getRingAverageFan(ring2);
+  if (avg1 <= 0.0 || avg2 <= 0.0) return 1.0;
+  return (avg1 * avg2) / (static_cast<double>(fan1) * static_cast<double>(fan2));
+}
+
+// True when the segment between the two crystal centres crosses the transaxial FOV
+// (circle of radius fovRadius around the axis): its transaxial distance to the axis R
+// is at most fovRadius, and the closest point to the axis lies between the crystals
+// (two crystals on the same side of the ring, e.g. two layers of one block, can be on
+// a line close to the axis without crossing the FOV).
+static inline bool lorCrossesFOV(const TVector3 &p1, const TVector3 &p2, double fovRadius) {
+  const double dx = p2.X() - p1.X();
+  const double dy = p2.Y() - p1.Y();
+  const double d2 = dx*dx + dy*dy;
+  if (d2 <= 0.0) return false;                       // same transaxial position
+  const double t = -(p1.X()*dx + p1.Y()*dy) / d2;    // closest point = p1 + t (p2 - p1)
+  if (t <= 0.0 || t >= 1.0) return false;
+  const double R = std::fabs(p1.X()*p2.Y() - p2.X()*p1.Y()) / std::sqrt(d2);
+  return R <= fovRadius;
 }
 
 // Extract the axial component of rsectorID (depends on repeater ordering)
@@ -79,7 +135,7 @@ void processSolidCyl_BlockCounts(
     const std::string &filename,
     vectorRingComponent &ringComponentVector,
     DetectorCounters &detectorEfficyCounts,
-    FanSumCounter &fanSumCounter,
+    std::vector<FanSumCounter> &fanSumCounters,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
     uint32_t nRsectorsAxial,
@@ -88,7 +144,7 @@ void processSolidCyl_BlockCounts(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t nLayers)
 {
@@ -146,19 +202,19 @@ void processSolidCyl_BlockCounts(
 
         int ringID1 = computeRingID(rsectorAxl1, moduleID1, submoduleID1, crystalID1,
                                     nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
         int ringID2 = computeRingID(rsectorAxl2, moduleID2, submoduleID2, crystalID2,
                                     nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
         int transaxialID1 = computeTransaxialID(rsectorTrs1, moduleID1, submoduleID1, crystalID1,
-                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
         int transaxialID2 = computeTransaxialID(rsectorTrs2, moduleID2, submoduleID2, crystalID2,
-                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
         // Add counts to both crystals involved in this coincidence
-        fanSumCounter.addCount(ringID1, transaxialID1);
-        fanSumCounter.addCount(ringID2, transaxialID2);
+        fanSumCounters[layerSlot(fanSumCounters, layerID1)].addCount(ringID1, transaxialID1);
+        fanSumCounters[layerSlot(fanSumCounters, layerID2)].addCount(ringID2, transaxialID2);
 
         // Accumulate axial block component: count coincidences within the same detector block
         // Two detectors are in the same block when all axial sub-indices match
@@ -197,10 +253,11 @@ void processSolidCyl_GeomMatrix(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t nLayers,
-    const ScannerGeometry &geom)
+    const ScannerGeometry &geom,
+    double fovRadius)
 {
     TFile *file = TFile::Open(filename.c_str());
     if (!file || file->IsZombie()) {
@@ -245,18 +302,18 @@ void processSolidCyl_GeomMatrix(
         Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
         // FILTER for the FIELD OF VIEW
-        if (std::fabs(mySinogram.R) > 300) continue;
+        if (!lorCrossesFOV(gPos1, gPos2, fovRadius)) continue;
 
         int ringID1 = computeRingID(
             rsectorAxlComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
             moduleID1, submoduleID1, crystalID1,
             nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-            nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+            nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
         int ringID2 = computeRingID(
             rsectorAxlComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
             moduleID2, submoduleID2, crystalID2,
             nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-            nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+            nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
         // Guard against zero ring counts
         if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
@@ -280,14 +337,14 @@ void processSolidCyl_GeomMatrix(
 //=============================================================================
 void processAnnular(
     const std::string &filename,
-    matrixRingsComponent &blockTrAComponentMatrix,
+    std::vector<matrixRingsComponent> &blockTrAComponentMatrices,
     vectorRadialComponent &radialComponentVector,
     std::vector<float> &minPhysicalR,  // Track min physical R (mm) per radialID bin
     const vectorRingComponent &ringComponentVector,
     double meanRingComponentVector,
     const matrixRingsComponent &ringsComponentMatrix,
     double meanRingsComponentMatrix,
-    const FanSumCounter &fanSumCounter,
+    const std::vector<FanSumCounter> &fanSumCounters,
     Long64_t &totalEvents,
     uint32_t nRsectorsAngPos,
     uint32_t nRsectorsAxial,
@@ -296,12 +353,13 @@ void processAnnular(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t nLayers,
     const Phantom &myPhantom,
     const Phantom &emptyPhantom,
-    const ScannerGeometry &geom)
+    const ScannerGeometry &geom,
+    double fovRadius)
 {
     TFile *file = TFile::Open(filename.c_str());
     if (!file || file->IsZombie()) {
@@ -333,8 +391,8 @@ void processAnnular(
     Long64_t nEvents = Coincidences->GetEntries();
     totalEvents += nEvents;
 
-    int maxRadialID = int(nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial / 2);
-    int maxTrAID = nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
+    const int totalTransaxial = gridPointsPerRing(geom);
+    const int maxRadialID = totalTransaxial / 2;
 
     std::cout << "=== Processing annular source from " << filename << " ===" << std::endl;
     std::cout << "  Processing " << nEvents << " events..." << std::endl;
@@ -348,7 +406,7 @@ void processAnnular(
         Sinogram mySinogram = ConvertToSinogram(gPos1, gPos2);
 
         // FILTER for the FIELD OF VIEW
-        if (std::fabs(mySinogram.R) > 300) continue;
+        if (!lorCrossesFOV(gPos1, gPos2, fovRadius)) continue;
 
         float lineIntegral = ComputePhantomLineIntegral(gPos1, gPos2, myPhantom, 1, 1);
         float emptyIntegral = ComputePhantomLineIntegral(gPos1, gPos2, emptyPhantom, 1, 1);
@@ -365,10 +423,10 @@ void processAnnular(
 
         int ringID1 = computeRingID(rsectorAxl1, moduleID1, submoduleID1, crystalID1,
                                     nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
         int ringID2 = computeRingID(rsectorAxl2, moduleID2, submoduleID2, crystalID2,
                                     nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                    nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
         // Guard against zero ring counts or zero matrix entries
         if (ringComponentVector[ringID1] <= 0.0 || ringComponentVector[ringID2] <= 0.0) {
@@ -384,38 +442,12 @@ void processAnnular(
             continue;
         }
 
-        // Compute transaxial strides
-        TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
-        int strideLayer = ts.strideLayer;
-        int strideCrystal = ts.strideCrystal;
-        int strideSubmodule = ts.strideSubmodule;
-        int strideModule = ts.strideModule;
-        int strideRsector = ts.strideRsector;
+        TransaxialPosition tp1 = transaxialPosition(geom, layerID1, rsectorTrs1, moduleID1, submoduleID1, crystalID1);
+        TransaxialPosition tp2 = transaxialPosition(geom, layerID2, rsectorTrs2, moduleID2, submoduleID2, crystalID2);
 
-        int ringPosID1 = 0;
-        int ringPosID2 = 0;
+        int trAID = tp1.trAID;
 
-        if (nModulesTransaxial > 1) {
-            ringPosID1 += moduleID1 * strideModule;
-            ringPosID2 += moduleID2 * strideModule;
-        }
-        if (nSubmodulesTransaxial > 1) {
-            ringPosID1 += submoduleID1 * strideSubmodule;
-            ringPosID2 += submoduleID2 * strideSubmodule;
-        }
-        if (nCrystalsTransaxial > 1) {
-            ringPosID1 += crystalID1 * strideCrystal;
-            ringPosID2 += crystalID2 * strideCrystal;
-        }
-
-        int trAID = ringPosID1;
-
-        ringPosID1 += rsectorTrs1 * strideRsector;
-        ringPosID2 += rsectorTrs2 * strideRsector;
-
-        int totalTransaxial = nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
-
-        int delta = abs(ringPosID1 - ringPosID2);
+        int delta = abs(tp1.ringPos - tp2.ringPos);
 
         if (delta == 0 || delta == totalTransaxial) {
             continue;
@@ -435,16 +467,16 @@ void processAnnular(
 
         // 3D Fan-Sum Efficiency
         int transaxialID1 = computeTransaxialID(rsectorTrs1, moduleID1, submoduleID1, crystalID1,
-                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
         int transaxialID2 = computeTransaxialID(rsectorTrs2, moduleID2, submoduleID2, crystalID2,
-                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                                                nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
-        double effNormFactor = fanSumCounter.getEfficiencyFactor(
-            ringID1, transaxialID1, ringID2, transaxialID2);
+        double effNormFactor = fanSumEfficiency(fanSumCounters,
+            layerID1, ringID1, transaxialID1, layerID2, ringID2, transaxialID2);
 
         double contribution = foldingWeight * blockCorrection * geomAxCorrection * effNormFactor / finalIntegral;
         radialComponentVector[radialID] += contribution;
-        blockTrAComponentMatrix[radialID][trAID] += contribution;
+        blockTrAComponentMatrices[layerSlot(blockTrAComponentMatrices, layerID1)][radialID][trAID] += contribution;
 
         // Track minimum physical |R| for this radialID bin
         float absR = std::fabs(mySinogram.R);
@@ -466,7 +498,7 @@ std::vector<DetectorIndices> buildCastorIDLUT(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t  nLayers,
     uint32_t *nCrystalPerLayer,
@@ -474,21 +506,16 @@ std::vector<DetectorIndices> buildCastorIDLUT(
     uint32_t nLayersRptAxial
 ) {
     // Compute max possible CastorID
-    //uint64_t totalCrystals = 0;
-    //for (int l = 0; l < nLayers; ++l) totalCrystals += nCrystalPerLayer[l];
-    uint64_t maxCastorID = nRsectorsAngPos * nRsectorsAxial *
-                           nModulesTransaxial * nModulesAxial *
-                           nSubmodulesTransaxial * nSubmodulesAxial *
-                           nCrystalsTransaxial * nCrystalsAxial *
-                           nLayersRptTransaxial * nLayersRptAxial;
+    uint64_t maxCastorID = 0;
+    for (int l = 0; l < nLayers; ++l) maxCastorID += nCrystalPerLayer[l];
 
 std::cout<<"Max castorID is "<<maxCastorID<<std::endl;
     std::vector<DetectorIndices> lut(maxCastorID);
 
     // Fill LUT (parallelised - each iteration writes to a unique castorID index)
-    #pragma omp parallel for collapse(4) schedule(static)
     for (uint32_t layerID = 0; layerID < nLayers; ++layerID) {
-      for (uint32_t crystalID = 0; crystalID < nCrystalsTransaxial*nCrystalsAxial; ++crystalID) {
+      #pragma omp parallel for collapse(4) schedule(static)
+      for (uint32_t crystalID = 0; crystalID < nCrystalsTransaxial[layerID]*nCrystalsAxial; ++crystalID) {
         for (uint32_t submoduleID = 0; submoduleID < nSubmodulesTransaxial*nSubmodulesAxial; ++submoduleID) {
           for (uint32_t moduleID = 0; moduleID < nModulesTransaxial*nModulesAxial; ++moduleID) {
             for (uint32_t rsectorID = 0; rsectorID < nRsectorsAngPos*nRsectorsAxial; ++rsectorID) {
@@ -532,7 +559,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         uint32_t nModulesAxial,
         uint32_t nSubmodulesTransaxial,
         uint32_t nSubmodulesAxial,
-        uint32_t nCrystalsTransaxial,
+        const uint32_t *nCrystalsTransaxial,
         uint32_t nCrystalsAxial,
         uint8_t  nLayers,
         uint32_t* nCrystalPerLayer,
@@ -543,46 +570,50 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
     const ScannerGeometry &geom,
     const std::string &outCSV,
     double axialSigma,
-    double transaxialSigma
+    double transaxialSigma,
+    double fovRadius
       )
 {
 
 	double PI = 3.14159265358979323846;
 
-	uint64_t maxCastorID = uint64_t(nRsectorsAngPos) * nRsectorsAxial *
-	                           nModulesTransaxial * nModulesAxial *
-	                           nSubmodulesTransaxial * nSubmodulesAxial *
-	                           nCrystalsTransaxial * nCrystalsAxial *
-	                           nLayers;
+	uint64_t maxCastorID = 0;
+	for (int l = 0; l < nLayers; ++l) maxCastorID += nCrystalPerLayer[l];
 
-	int transaxialElements = 0;
-	if (nModulesTransaxial>1) transaxialElements +=1;
-	if (nSubmodulesTransaxial>1) transaxialElements +=1;
-	if (nCrystalsTransaxial>1) transaxialElements +=1;
-	if (nLayers>1) transaxialElements +=1;
-
-	int maxSymID = maxCastorID*maxCastorID/(nRsectorsAngPos * nRsectorsAxial);
 	int maxRingID	= nRsectorsAxial*nModulesAxial*nSubmodulesAxial*nCrystalsAxial;
 
-	int maxRadialID = int(nRsectorsAngPos*nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial/2);
-	int maxTrAID	= nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial;
+	// radialID is counted on the common transaxial grid of all layers (gridPointsPerRing).
+	// trAID is counted in the crystals of each layer: with the same transaxial count in
+	// every layer one block matrix is shared by all layers, otherwise there is one per layer.
+	int totalTransaxial = gridPointsPerRing(geom);
+	int maxRadialID = totalTransaxial/2;
+	size_t nLayerSlots = geom.uniformCrystalsTransaxial ? 1 : nLayers;
+	std::vector<int> maxTrAID(nLayerSlots);
+	for (size_t l = 0; l < nLayerSlots; ++l)
+	  maxTrAID[l] = nModulesTransaxial *nSubmodulesTransaxial * nCrystalsTransaxial[l];
 
-	std::cout<<"maxRadial ID = "<<maxRadialID<<" maxTrAID = "<<maxTrAID<<std::endl;
+	std::cout<<"maxRadial ID = "<<maxRadialID<<" maxTrAID =";
+	for (size_t l = 0; l < nLayerSlots; ++l) std::cout<<" "<<maxTrAID[l];
+	std::cout<<std::endl;
 
 	matrixRingsComponent		ringsComponentMatrix(maxRingID, std::vector<double>(maxRingID));
-  matrixRingsComponent		blockTrAComponentMatrix(maxRadialID,std::vector<double>(maxTrAID));
+  std::vector<matrixRingsComponent> blockTrAComponentMatrices;
+  for (size_t l = 0; l < nLayerSlots; ++l)
+    blockTrAComponentMatrices.emplace_back(maxRadialID, std::vector<double>(maxTrAID[l]));
   vectorRadialComponent		radialComponentVector(maxRadialID,0.0);
   std::vector<float>      minPhysicalR(maxRadialID, std::numeric_limits<float>::max());  // Track min physical R per bin
 	vectorRingComponent			ringComponentVector(maxRingID,0.0);
 
-	DetectorCounters detectorEfficyCounts(nSubmodulesTransaxial*nSubmodulesAxial, nCrystalsTransaxial*nCrystalsAxial,nLayers);
+	DetectorCounters detectorEfficyCounts(nSubmodulesTransaxial*nSubmodulesAxial, geom.maxNCrystalsTransaxial()*nCrystalsAxial,nLayers);
 
 	// 3D Fan-Sum Counter for intrinsic detector efficiency (Pepin et al. 2011)
 	// Ring dimension: full axial crystal count (consistent with maxRingID)
 	// Transaxial dimension: nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial
+	// One counter shared by all layers, or one per layer (same rule as the block matrices)
 	uint32_t nFanSumRings = nRsectorsAxial * nModulesAxial * nSubmodulesAxial * nCrystalsAxial;
-	uint32_t nFanSumTransaxial = nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
-	FanSumCounter fanSumCounter(nFanSumRings, nFanSumTransaxial);
+	std::vector<FanSumCounter> fanSumCounters;
+	for (size_t l = 0; l < nLayerSlots; ++l)
+	  fanSumCounters.emplace_back(nFanSumRings, nRsectorsAngPos * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial[l]);
 
 
 
@@ -635,7 +666,7 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               solidCylFile,
               ringComponentVector,
               detectorEfficyCounts,
-              fanSumCounter,
+              fanSumCounters,
               totalEvents,
               nRsectorsAngPos,
               nRsectorsAxial,
@@ -681,18 +712,24 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               nCrystalsTransaxial,
               nCrystalsAxial,
               nLayers,
-              geom);
+              geom,
+              fovRadius);
       }
 
       // Compute geometric mean of ringsComponentMatrix
       meanRingsComponentMatrix = geometricMeanMatrix(ringsComponentMatrix);
 
       // Diagnostic output for 3D fan-sum counter
-      std::cout << "\n=== 3D Fan-Sum Counter Statistics ===" << std::endl;
+      for (size_t l = 0; l < fanSumCounters.size(); ++l) {
+      const FanSumCounter &fanSumCounter = fanSumCounters[l];
+      std::cout << "\n=== 3D Fan-Sum Counter Statistics";
+      if (fanSumCounters.size() > 1) std::cout << " (layer " << l << ")";
+      std::cout << " ===" << std::endl;
       std::cout << "  Min fan count: " << fanSumCounter.getMinFanCount() << std::endl;
       std::cout << "  Max fan count: " << fanSumCounter.getMaxFanCount() << std::endl;
       std::cout << "  Global average fan: " << fanSumCounter.getGlobalAverageFan() << std::endl;
       std::cout << "  Poissonian error (min): " << 1.0/std::sqrt(static_cast<double>(fanSumCounter.getMinFanCount())) << std::endl;
+      }
   } else {
       std::cerr << "Warning: No solidCyl file found in input files!" << std::endl;
   }
@@ -708,14 +745,14 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
       for (const auto &annularFile : annularFiles) {
           processAnnular(
               annularFile,
-              blockTrAComponentMatrix,
+              blockTrAComponentMatrices,
               radialComponentVector,
               minPhysicalR,
               ringComponentVector,
               meanRingComponentVector,
               ringsComponentMatrix,
               meanRingsComponentMatrix,
-              fanSumCounter,
+              fanSumCounters,
               totalEvents,
               nRsectorsAngPos,
               nRsectorsAxial,
@@ -729,7 +766,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               nLayers,
               myPhantom,
               emptyPhantom,
-              geom);
+              geom,
+              fovRadius);
       }
 
       // Apply Gaussian smoothing to radialComponentVector AFTER all annular files processed
@@ -741,7 +779,15 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
       }
 
       meanRadialComponentVector = geometricMeanVector(radialComponentVector);
-      meanBlockTrAComponentMatrix = geometricMeanMatrix(blockTrAComponentMatrix);
+      // One geometric mean over all block matrices, so that differences between
+      // layers stay in the interference factor
+      if (blockTrAComponentMatrices.size() == 1) {
+          meanBlockTrAComponentMatrix = geometricMeanMatrix(blockTrAComponentMatrices[0]);
+      } else {
+          matrixRingsComponent allLayers;
+          for (const auto &m : blockTrAComponentMatrices) allLayers.insert(allLayers.end(), m.begin(), m.end());
+          meanBlockTrAComponentMatrix = geometricMeanMatrix(allLayers);
+      }
   } else {
       std::cerr << "Warning: No annular file found in input files!" << std::endl;
   }
@@ -800,6 +846,19 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
   std::cout << "Using flattened CastorID loop with maxCastorID = " << maxCastorID << std::endl;
 
+  // Crystal centres per castorID, for the FOV selection of the LORs
+  std::vector<TVector3> crystalPositions(maxCastorID);
+  #pragma omp parallel for schedule(static)
+  for (uint64_t castorID = 0; castorID < maxCastorID; ++castorID) {
+    DetectorIndices d = ReverseCastorID(castorID,
+        nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
+        nModulesTransaxial, nModulesAxial, nSubmodulesTransaxial, nSubmodulesAxial,
+        nCrystalsTransaxial, nCrystalsAxial, nLayers, nCrystalPerLayer,
+        nLayersRptTransaxial, nLayersRptAxial);
+    crystalPositions[castorID] = convertToPosition(geom, d.layerID, d.crystalID, d.submoduleID,
+                                                   d.moduleID, d.rsectorID);
+  }
+
   // Buffer size for batched writes (reduces critical section contention)
   constexpr size_t BUFFER_FLUSH_SIZE = 10000;
 
@@ -828,6 +887,10 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
     uint32_t layerID2     = det2.layerID;
 
     for (uint64_t castorID1 = castorID2 + 1; castorID1 < maxCastorID; ++castorID1) {
+      // Keep only the LORs inside the FOV (same selection as the solidCyl and annular passes)
+      if (!lorCrossesFOV(crystalPositions[castorID1], crystalPositions[castorID2], fovRadius))
+        continue;
+
       // Get component IDs for detector 1
       DetectorIndices det1 = ReverseCastorID(castorID1,
           nRsectorsAngPos, nRsectorsAxial, invertDetOrder, rsectorIdOrder,
@@ -841,30 +904,6 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
       uint32_t crystalID1   = det1.crystalID;
       uint32_t layerID1     = det1.layerID;
 
-      // Compute transaxial component of rsectorID (handles axial repeats)
-      int rsectorTrs1, rsectorTrs2;
-      if (rsectorIdOrder == 0) {
-        rsectorTrs1 = rsectorID1 % nRsectorsAngPos;
-        rsectorTrs2 = rsectorID2 % nRsectorsAngPos;
-      } else {
-        // axial-first ordering
-        rsectorTrs1 = rsectorID1 / nRsectorsAxial;
-        rsectorTrs2 = rsectorID2 / nRsectorsAxial;
-      }
-
-      // Circular difference on transaxial sectors (wrap-around aware)
-      int absDiff = std::abs(rsectorTrs1 - rsectorTrs2);
-      int circDiff = std::min(absDiff, int(nRsectorsAngPos) - absDiff);
-
-      if (circDiff < 4)
-        continue;
-      if (circDiff == 4) {
-        if ((nSubmodulesTransaxial != 0) && (abs(int(submoduleID1) - int(submoduleID2)) < 13))
-          continue;
-        else if ((nCrystalsTransaxial != 0) && (abs(int(crystalID1) - int(crystalID2)) < 13))
-          continue;
-      }
-
       // castorID1 > castorID2 is guaranteed by loop structure
 
                         // Count this unique LOR only when we actually write it
@@ -873,79 +912,58 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
 
 
 
-                                          TransaxialStrides ts = makeTransaxialStrides(nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial, nLayers);
-                                          int strideLayer     = ts.strideLayer;
-                                          int strideCrystal   = ts.strideCrystal;
-                                          int strideSubmodule = ts.strideSubmodule;
-                                          int strideModule    = ts.strideModule;
-                                          int strideRsector   = ts.strideRsector;
+                      TransaxialPosition tp1 = transaxialPosition(geom, layerID1,
+                          rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+                          moduleID1, submoduleID1, crystalID1);
+                      TransaxialPosition tp2 = transaxialPosition(geom, layerID2,
+                          rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
+                          moduleID2, submoduleID2, crystalID2);
 
-										  int ringPosID1 = 0;
-										  int ringPosID2 = 0;
+                      //Since the radialID is computed as the difference between the two ringPos,
+                      //the position of crystal 1 inside its rsector defines the intra block
+                      //position for each radialID:
+                      int trAID = tp1.trAID;
+                      const matrixRingsComponent &blockTrAComponentMatrix =
+                          blockTrAComponentMatrices[layerSlot(blockTrAComponentMatrices, layerID1)];
 
-										  if (nModulesTransaxial > 1){
-											  ringPosID1 += (moduleID1 % nModulesTransaxial) * strideModule;
-										  	  ringPosID2 += (moduleID2 % nModulesTransaxial) * strideModule;
-										  }
-										  if(nSubmodulesTransaxial > 1){
-										  	  ringPosID1 += (submoduleID1 % nSubmodulesTransaxial) * strideSubmodule;
-										  	  ringPosID2 += (submoduleID2 % nSubmodulesTransaxial) * strideSubmodule;
-										  }
-										  if (nCrystalsTransaxial > 1){
-											  ringPosID1 += (crystalID1 % nCrystalsTransaxial) * strideCrystal;
-										  	  ringPosID2 += (crystalID2 % nCrystalsTransaxial) * strideCrystal;
-									  	  }
-
-										  //Since the radialID is computed as the difference between the two ringPosID,
-										  //the ringPosID1 before adding the rsector value already defines the intra
-										  //block position for each radialID:
-										  int trAID = ringPosID1;
-										  ringPosID1 += rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial) * strideRsector;
-										  ringPosID2 += rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial) * strideRsector;
-
-										  int totalTransaxial = nRsectorsAngPos*nModulesTransaxial*nSubmodulesTransaxial*nCrystalsTransaxial;// *nLayers; 18D removign nlayersfrom transaxial
-
-										  // Compute delta between the two transaxial detector indices
-										  int delta = abs(ringPosID1 - ringPosID2);
+                      // Compute delta between the two transaxial detector positions
+                      int delta = abs(tp1.ringPos - tp2.ringPos);
 
                       // If delta is 0 or equals totalTransaxial then radialID becomes -1 -> debug and skip
                       if (delta == 0 || delta == totalTransaxial) {
-                          int ringPosBefore1 = ringPosID1 - rsectorID1 * strideRsector;
-                          int ringPosBefore2 = ringPosID2 - rsectorID2 * strideRsector;
                           std::cerr << "DEBUG: invalid delta encountered (delta=" << delta << ") -> radialID would be -1.\n"
                                     << " indices: layer1=" << layerID1 << ", module1=" << moduleID1 << ", submodule1=" << submoduleID1 << ", crystal1=" << crystalID1 << ", rsector1=" << rsectorID1 << "\n"
                                     << "          layer2=" << layerID2 << ", module2=" << moduleID2 << ", submodule2=" << submoduleID2 << ", crystal2=" << crystalID2 << ", rsector2=" << rsectorID2 << "\n"
-                                    << " ringPos before rsector: " << ringPosBefore1 << " vs " << ringPosBefore2 << "\n"
-                                    << " ringPos after rsector:  " << ringPosID1 << " vs " << ringPosID2 << "\n"
-                                    << " strideRsector=" << strideRsector << ", totalTransaxial=" << totalTransaxial << "\n";
+                                    << " ringPos: " << tp1.ringPos << " vs " << tp2.ringPos
+                                    << ", totalTransaxial=" << totalTransaxial << "\n";
                           // Skip this invalid pairing; it should not contribute to transaxial bins
                           continue;
                       }
 
                       // Fold the radial ID so that opposite orientations map to the same bin
                       int radialID = std::min(delta, totalTransaxial - delta)-1;
-										  // Safety: ensure radialID stays within bounds
-										  // (expected size is totalTransaxial/2)
-										  if (radialID < 0 || radialID >= totalTransaxial/2) {
-										      std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
-										  }
-										  if (trAID < 0 || trAID >= maxTrAID) {
-										      std::cerr << "BAD trAID = " << trAID
-										                << " (max=" << maxTrAID << ")\n";
-										      std::abort();
-										  }
+                      // Safety: ensure radialID stays within bounds
+                      // (expected size is totalTransaxial/2)
+                      if (radialID < 0 || radialID >= totalTransaxial/2) {
+                          std::cerr << "Error: radialID out of bounds: " << radialID << std::endl;
+                      }
+                      if (trAID < 0 || size_t(trAID) >= blockTrAComponentMatrix[0].size()) {
+                          std::cerr << "BAD trAID = " << trAID
+                                    << " (max=" << blockTrAComponentMatrix[0].size() << ")\n";
+                          std::abort();
+                      }
 
 
                       int ringID1 = computeRingID(
                           rsectorAxlComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
                           moduleID1, submoduleID1, crystalID1,
                           nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
                       int ringID2 = computeRingID(
                           rsectorAxlComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
                           moduleID2, submoduleID2, crystalID2,
                           nModulesAxial, nSubmodulesAxial, nCrystalsAxial,
-                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
 										  double blockCorrection = sqrt(meanRingComponentVector*meanRingComponentVector/(ringComponentVector[ringID1]*ringComponentVector[ringID2]));
 										  double geomAxCorrection = meanRingsComponentMatrix/(ringsComponentMatrix[ringID1][ringID2]);
@@ -958,15 +976,15 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
                       int transaxialID1 = computeTransaxialID(
                           rsectorTrsComponent(rsectorID1, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
                           moduleID1, submoduleID1, crystalID1,
-                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID1]);
                       int transaxialID2 = computeTransaxialID(
                           rsectorTrsComponent(rsectorID2, rsectorIdOrder, nRsectorsAngPos, nRsectorsAxial),
                           moduleID2, submoduleID2, crystalID2,
-                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial);
+                          nModulesTransaxial, nSubmodulesTransaxial, nCrystalsTransaxial[layerID2]);
 
 										  // Get fan-sum based efficiency factor
-										  double effNormFactor = fanSumCounter.getEfficiencyFactor(
-										      ringID1, transaxialID1, ringID2, transaxialID2);
+										  double effNormFactor = fanSumEfficiency(fanSumCounters,
+										      layerID1, ringID1, transaxialID1, layerID2, ringID2, transaxialID2);
 
 
 
@@ -1043,9 +1061,8 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
       }
     }
 
-    int64_t totalTransaxial = int64_t(nRsectorsAngPos) * nModulesTransaxial * nSubmodulesTransaxial * nCrystalsTransaxial;
-    int64_t strideRsector_with_layers = int64_t(nModulesTransaxial) * nSubmodulesTransaxial * nCrystalsTransaxial * nLayers;
-    int64_t strideRsector_no_layers = int64_t(nModulesTransaxial) * nSubmodulesTransaxial * nCrystalsTransaxial;
+    int64_t strideRsector_with_layers = int64_t(nModulesTransaxial) * nSubmodulesTransaxial * geom.gridPointsPerSubmodule * nLayers;
+    int64_t strideRsector_no_layers = int64_t(nModulesTransaxial) * nSubmodulesTransaxial * geom.gridPointsPerSubmodule;
 
     std::cout << "Radial diagnostic: nonZeroCount=" << nonZeroCount
               << ", firstNonZero=" << (firstNonZero == radialComponentVector.size() ? -1 : (int)firstNonZero)
@@ -1055,7 +1072,9 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
               << ", nRsectorsAngPos=" << nRsectorsAngPos
               << ", nModulesTransaxial=" << nModulesTransaxial
               << ", nSubmodulesTransaxial=" << nSubmodulesTransaxial
-              << ", nCrystalsTransaxial=" << nCrystalsTransaxial
+              << ", nCrystalsTransaxial=";
+    for (int l = 0; l < nLayers; ++l) std::cout << (l ? "/" : "") << nCrystalsTransaxial[l];
+    std::cout
               << ", nLayers=" << (int)nLayers
               << std::endl;
 
@@ -1107,7 +1126,11 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   // 3) interference: per (radialID, trAID) -> interferenceTraFactor
   {
     std::ofstream csvInterf(outputDir + outputMatrixFileName + "_interference.csv");
-    csvInterf << "radialID,trAID,interferenceTraFactor\n";
+    // With one block matrix per layer, a leading layer column is added
+    const bool perLayer = blockTrAComponentMatrices.size() > 1;
+    csvInterf << (perLayer ? "layer," : "") << "radialID,trAID,interferenceTraFactor\n";
+    for (size_t l = 0; l < blockTrAComponentMatrices.size(); ++l) {
+    const matrixRingsComponent &blockTrAComponentMatrix = blockTrAComponentMatrices[l];
     for (size_t r = 0; r < blockTrAComponentMatrix.size(); ++r) {
       for (size_t t = 0; t < blockTrAComponentMatrix[r].size(); ++t) {
         double tgnf = 0.0;
@@ -1117,8 +1140,10 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
         double interf = 0.0;
         if (denom != 0.0)
           interf = meanBlockTrAComponentMatrix / denom;
+        if (perLayer) csvInterf << l << ",";
         csvInterf << r << "," << t << "," << interf << "\n";
       }
+    }
     }
     csvInterf.close();
   }
@@ -1126,14 +1151,20 @@ void computeNormalizationFactors( const std::vector<std::string> &filenames, con
   // 4) fan_sum_efficiency: per crystal (ring, transaxial) -> fan count, ring average, efficiency
   {
     std::ofstream csvFanSum(outputDir + outputMatrixFileName + "_fan_sum_efficiency.csv");
-    csvFanSum << "ringID,transaxialID,fanCount,ringAverage,efficiencyFactor\n";
+    // With one fan-sum counter per layer, a leading layer column is added
+    const bool perLayer = fanSumCounters.size() > 1;
+    csvFanSum << (perLayer ? "layer," : "") << "ringID,transaxialID,fanCount,ringAverage,efficiencyFactor\n";
+    for (size_t l = 0; l < fanSumCounters.size(); ++l) {
+    const FanSumCounter &fanSumCounter = fanSumCounters[l];
     for (uint32_t u = 0; u < fanSumCounter.nRings; ++u) {
       double ringAvg = fanSumCounter.getRingAverageFan(u);
       for (uint32_t i = 0; i < fanSumCounter.nTransaxial; ++i) {
         Long64_t fanCount = fanSumCounter.getFanCount(u, i);
         double effFactor = (fanCount > 0 && ringAvg > 0) ? (ringAvg / static_cast<double>(fanCount)) : 1.0;
+        if (perLayer) csvFanSum << l << ",";
         csvFanSum << u << "," << i << "," << fanCount << "," << ringAvg << "," << effFactor << "\n";
       }
+    }
     }
     csvFanSum.close();
   }
@@ -1177,7 +1208,7 @@ uint32_t ConvertIDcylindrical(uint32_t  nRsectorsAngPos,
                               uint32_t  nModulesAxial,
                               uint32_t  nSubmodulesTransaxial,
                               uint32_t  nSubmodulesAxial,
-                              uint32_t  nCrystalsTransaxial,
+                              const uint32_t *nCrystalsTransaxial,
                               uint32_t  nCrystalsAxial,
                               uint8_t   nLayers,
                               uint32_t	*nCrystalPerLayer,
@@ -1199,10 +1230,11 @@ uint32_t ConvertIDcylindrical(uint32_t  nRsectorsAngPos,
     // CASToR indexes all crystals of a layer ring before the next layer
 
 
-  	if (layer > 0) castorID += nCrystalPerLayer[layer-1]*layer;
+  	for (uint8_t l = 0; l < layer; ++l) castorID += nCrystalPerLayer[l];
 
-
-    int32_t nTrsCrystalsPerSubmodule = nCrystalsTransaxial;
+    // The transaxial crystal count can differ between layers
+    const int32_t nCrystalsTrs = nCrystalsTransaxial[layer];
+    int32_t nTrsCrystalsPerSubmodule = nCrystalsTrs;
     int32_t nTrsCrystalsPerModule = nTrsCrystalsPerSubmodule * nSubmodulesTransaxial;
     int32_t nTrsCrystalsPerRsector = nTrsCrystalsPerModule * nModulesTransaxial;
     int32_t nCrystalsPerRing = nTrsCrystalsPerRsector * nRsectorsAngPos;
@@ -1230,19 +1262,19 @@ uint32_t ConvertIDcylindrical(uint32_t  nRsectorsAngPos,
     int32_t ringID = rsectorAxlID * nModulesAxial * nSubmodulesAxial * nCrystalsAxial
                    + (int32_t)(moduleID/nModulesTransaxial) * nSubmodulesAxial * nCrystalsAxial
                    + (int32_t)(submoduleID/nSubmodulesTransaxial) * nCrystalsAxial
-                   + (int32_t)(crystalID/nCrystalsTransaxial);
+                   + (int32_t)(crystalID/nCrystalsTrs);
 
     // Recover transaxial ID for each element
     moduleID = moduleID % nModulesTransaxial;
     submoduleID = submoduleID % nSubmodulesTransaxial;
-    crystalID = crystalID % nCrystalsTransaxial;
+    crystalID = crystalID % nCrystalsTrs;
 
     // Reverse transaxial ordering
     if( a_invertDetOrder )
     {
       moduleID    = nModulesTransaxial-1 - moduleID;
       submoduleID = nSubmodulesTransaxial-1 - submoduleID;
-      crystalID   = nCrystalsTransaxial-1 - crystalID;
+      crystalID   = nCrystalsTrs-1 - crystalID;
     }
 
     // Compute final ID
@@ -1272,7 +1304,7 @@ DetectorIndices ReverseCastorID(
     uint32_t nModulesAxial,
     uint32_t nSubmodulesTransaxial,
     uint32_t nSubmodulesAxial,
-    uint32_t nCrystalsTransaxial,
+    const uint32_t *nCrystalsTransaxial,
     uint32_t nCrystalsAxial,
     uint8_t  nLayers,
     uint32_t *nCrystalPerLayer,
@@ -1281,33 +1313,29 @@ DetectorIndices ReverseCastorID(
 {
     DetectorIndices result;
 
-    // Compute strides (same as forward function)
-    uint32_t nTrsCrystalsPerSubmodule = nCrystalsTransaxial;
-    uint32_t nTrsCrystalsPerModule    = nTrsCrystalsPerSubmodule * nSubmodulesTransaxial;
-    uint32_t nTrsCrystalsPerRsector   = nTrsCrystalsPerModule * nModulesTransaxial;
-    uint32_t nCrystalsPerRing         = nTrsCrystalsPerRsector * nRsectorsAngPos;
-
-    // Determine layer and subtract layer offset
+    // Determine layer and subtract layer offset (all crystals of a layer come
+    // before the next layer)
     uint32_t layerID = 0;
     uint32_t remainingID = castorID;
 
     if (nLayers > 1) {
-        // Find which layer this castorID belongs to
         uint32_t layerOffset = 0;
         for (uint8_t l = 0; l < nLayers; ++l) {
-            uint32_t crystalsInLayer = nCrystalPerLayer[l];
-            if (l > 0) {
-                layerOffset = nCrystalPerLayer[l-1] * l;
-            }
-            uint32_t nextLayerOffset = nCrystalPerLayer[l] * (l + 1);
-
-            if (castorID < nextLayerOffset || l == nLayers - 1) {
+            if (castorID < layerOffset + nCrystalPerLayer[l] || l == nLayers - 1) {
                 layerID = l;
                 remainingID = castorID - layerOffset;
                 break;
             }
+            layerOffset += nCrystalPerLayer[l];
         }
     }
+
+    // Compute strides (same as forward function), with the transaxial crystal count of the layer
+    const uint32_t nCrystalsTrs       = nCrystalsTransaxial[layerID];
+    uint32_t nTrsCrystalsPerSubmodule = nCrystalsTrs;
+    uint32_t nTrsCrystalsPerModule    = nTrsCrystalsPerSubmodule * nSubmodulesTransaxial;
+    uint32_t nTrsCrystalsPerRsector   = nTrsCrystalsPerModule * nModulesTransaxial;
+    uint32_t nCrystalsPerRing         = nTrsCrystalsPerRsector * nRsectorsAngPos;
 
     // Extract ringID and transaxial components
     uint32_t ringID       = remainingID / nCrystalsPerRing;
@@ -1326,7 +1354,7 @@ DetectorIndices ReverseCastorID(
     if (invertDetOrder) {
         moduleIDTrs    = nModulesTransaxial - 1 - moduleIDTrs;
         submoduleIDTrs = nSubmodulesTransaxial - 1 - submoduleIDTrs;
-        crystalIDTrs   = nCrystalsTransaxial - 1 - crystalIDTrs;
+        crystalIDTrs   = nCrystalsTrs - 1 - crystalIDTrs;
     }
 
     // Extract axial components from ringID
@@ -1350,7 +1378,7 @@ DetectorIndices ReverseCastorID(
     // Recombine transaxial and axial into original combined IDs
     uint32_t moduleID    = moduleIDAxl * nModulesTransaxial + moduleIDTrs;
     uint32_t submoduleID = submoduleIDAxl * nSubmodulesTransaxial + submoduleIDTrs;
-    uint32_t crystalID   = crystalIDAxl * nCrystalsTransaxial + crystalIDTrs;
+    uint32_t crystalID   = crystalIDAxl * nCrystalsTrs + crystalIDTrs;
 
     // Recombine rsectorID from axial and transaxial parts
     uint32_t rsectorID;
